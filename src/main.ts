@@ -16,6 +16,8 @@ const scanController = new ScanController("Ready");
 const frameSampleIntervalMs = appConfig.retryIntervalMs;
 
 const latestOCRResult: OCRResult | null = null;
+let preferredFacingMode: "user" | "environment" = "environment";
+let selectedCameraId: string | null = null;
 
 const plannedAudioOutput: AudioResolution = {
   playbackRate: appConfig.audioPlaybackRate,
@@ -42,6 +44,13 @@ app.innerHTML = `
       <p><strong>Queued audio segments:</strong> ${plannedAudioOutput.segments.length}</p>
       <p id="camera-message">Camera preview not started.</p>
       <p id="sample-status"><strong>Sample loop:</strong> idle</p>
+      <div class="camera-controls">
+        <label for="camera-select"><strong>Camera:</strong></label>
+        <select id="camera-select" disabled>
+          <option value="">Default rear camera</option>
+        </select>
+        <button id="switch-facing-btn" type="button" disabled>Switch to Front Camera</button>
+      </div>
       <div class="preview-frame">
         <video id="camera-preview" autoplay muted playsinline></video>
         <div id="ticket-overlay" class="ticket-overlay hidden"></div>
@@ -59,6 +68,8 @@ const cameraMessageElement = document.querySelector<HTMLParagraphElement>("#came
 const sampleStatusElement = document.querySelector<HTMLParagraphElement>("#sample-status");
 const previewElement = document.querySelector<HTMLVideoElement>("#camera-preview");
 const ticketOverlayElement = document.querySelector<HTMLDivElement>("#ticket-overlay");
+const cameraSelectElement = document.querySelector<HTMLSelectElement>("#camera-select");
+const switchFacingButton = document.querySelector<HTMLButtonElement>("#switch-facing-btn");
 const startCameraButton = document.querySelector<HTMLButtonElement>("#start-camera-btn");
 const stopCameraButton = document.querySelector<HTMLButtonElement>("#stop-camera-btn");
 
@@ -68,6 +79,8 @@ if (
   !sampleStatusElement ||
   !previewElement ||
   !ticketOverlayElement ||
+  !cameraSelectElement ||
+  !switchFacingButton ||
   !startCameraButton ||
   !stopCameraButton
 ) {
@@ -79,6 +92,80 @@ let samplingTimerId: number | null = null;
 let sampleCount = 0;
 const sampleCanvas = document.createElement("canvas");
 const sampleContext = sampleCanvas.getContext("2d");
+
+const inferFacingModeFromLabel = (label: string): "user" | "environment" | null => {
+  const lowerLabel = label.toLowerCase();
+  if (/(back|rear|environment|world)/.test(lowerLabel)) {
+    return "environment";
+  }
+
+  if (/(front|user|facetime|selfie)/.test(lowerLabel)) {
+    return "user";
+  }
+
+  return null;
+};
+
+const setSwitchFacingLabel = (): void => {
+  switchFacingButton.textContent =
+    preferredFacingMode === "environment" ? "Switch to Front Camera" : "Switch to Rear Camera";
+};
+
+const updateCameraControlsState = (enabled: boolean): void => {
+  cameraSelectElement.disabled = !enabled;
+  switchFacingButton.disabled = !enabled;
+  setSwitchFacingLabel();
+};
+
+const populateCameraOptions = async (): Promise<void> => {
+  if (!navigator.mediaDevices?.enumerateDevices) {
+    cameraSelectElement.innerHTML = `<option value=\"\">Default camera</option>`;
+    return;
+  }
+
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const videoDevices = devices.filter((device) => device.kind === "videoinput");
+
+  if (videoDevices.length === 0) {
+    cameraSelectElement.innerHTML = `<option value=\"\">No camera devices detected</option>`;
+    return;
+  }
+
+  cameraSelectElement.innerHTML = "";
+  const defaultOption = document.createElement("option");
+  defaultOption.value = "";
+  defaultOption.textContent = preferredFacingMode === "environment" ? "Default rear camera" : "Default front camera";
+  cameraSelectElement.append(defaultOption);
+
+  for (const [index, device] of videoDevices.entries()) {
+    const option = document.createElement("option");
+    option.value = device.deviceId;
+    option.textContent = device.label || `Camera ${index + 1}`;
+    cameraSelectElement.append(option);
+  }
+
+  if (selectedCameraId) {
+    cameraSelectElement.value = selectedCameraId;
+  } else {
+    cameraSelectElement.value = "";
+  }
+};
+
+const getVideoConstraints = (): MediaTrackConstraints => {
+  if (selectedCameraId) {
+    return {
+      deviceId: { exact: selectedCameraId },
+      width: { ideal: 1280 },
+      height: { ideal: 720 }
+    };
+  }
+
+  return {
+    facingMode: { ideal: preferredFacingMode },
+    width: { ideal: 1280 },
+    height: { ideal: 720 }
+  };
+};
 
 const setAppState = (stateLabel: string): void => {
   appStateElement.innerHTML = `<strong>App state:</strong> ${stateLabel}`;
@@ -183,6 +270,7 @@ const stopPreview = (): void => {
   previewElement.srcObject = null;
   stopCameraButton.disabled = true;
   startCameraButton.disabled = !hasCameraApi || !isChrome;
+  updateCameraControlsState(hasCameraApi && isChrome);
   scanController.setState("Ready");
   setCameraMessage("Camera preview stopped.");
 };
@@ -205,24 +293,39 @@ const startPreview = async (): Promise<void> => {
     setCameraMessage("Requesting camera permission...");
 
     cameraStream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        width: { ideal: 1280 },
-        height: { ideal: 720 }
-      },
+      video: getVideoConstraints(),
       audio: false
     });
 
     previewElement.srcObject = cameraStream;
+    const activeTrack = cameraStream.getVideoTracks()[0];
+    const activeSettings = activeTrack?.getSettings();
+    const activeDeviceId = activeSettings?.deviceId;
+    if (activeDeviceId) {
+      selectedCameraId = activeDeviceId;
+    }
+
+    if (activeTrack?.label) {
+      const inferred = inferFacingModeFromLabel(activeTrack.label);
+      if (inferred) {
+        preferredFacingMode = inferred;
+      }
+    }
+
+    await populateCameraOptions();
+
     scanController.setState("Scanning");
     setCameraMessage("Camera preview active.");
     sampleCount = 0;
     startSampling();
     stopCameraButton.disabled = false;
+    updateCameraControlsState(true);
   } catch (error) {
     stopSampling();
     hideTicketOverlay();
     scanController.setState("RetryNeeded");
     startCameraButton.disabled = false;
+    updateCameraControlsState(hasCameraApi && isChrome);
     setCameraMessage(
       error instanceof Error ? `Unable to start camera: ${error.message}` : "Unable to start camera."
     );
@@ -230,9 +333,35 @@ const startPreview = async (): Promise<void> => {
 };
 
 startCameraButton.disabled = !hasCameraApi || !isChrome;
+updateCameraControlsState(hasCameraApi && isChrome);
+void populateCameraOptions();
+
 startCameraButton.addEventListener("click", () => {
   void startPreview();
 });
 stopCameraButton.addEventListener("click", stopPreview);
+cameraSelectElement.addEventListener("change", () => {
+  selectedCameraId = cameraSelectElement.value || null;
+  if (cameraStream) {
+    stopPreview();
+    void startPreview();
+  }
+});
+switchFacingButton.addEventListener("click", () => {
+  preferredFacingMode = preferredFacingMode === "environment" ? "user" : "environment";
+  selectedCameraId = null;
+  void populateCameraOptions();
+
+  if (cameraStream) {
+    stopPreview();
+    void startPreview();
+  } else {
+    setSwitchFacingLabel();
+  }
+});
+
+navigator.mediaDevices?.addEventListener?.("devicechange", () => {
+  void populateCameraOptions();
+});
 
 window.addEventListener("beforeunload", stopPreview);
