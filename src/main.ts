@@ -57,6 +57,16 @@ app.innerHTML = `
         <video id="camera-preview" autoplay muted playsinline></video>
         <div id="ticket-overlay" class="ticket-overlay hidden"></div>
       </div>
+      <div class="roi-debug-panel">
+        <div class="roi-debug-card">
+          <p id="name-roi-label"><strong>Name ROI:</strong> waiting</p>
+          <canvas id="name-roi-preview" class="roi-preview-canvas" width="1" height="1"></canvas>
+        </div>
+        <div class="roi-debug-card">
+          <p id="seat-roi-label"><strong>Seat ROI:</strong> waiting</p>
+          <canvas id="seat-roi-preview" class="roi-preview-canvas" width="1" height="1"></canvas>
+        </div>
+      </div>
       <div class="actions">
         <button id="start-camera-btn" type="button">Enable Camera</button>
         <button id="stop-camera-btn" type="button" disabled>Stop Camera</button>
@@ -70,6 +80,10 @@ const cameraMessageElement = document.querySelector<HTMLParagraphElement>("#came
 const sampleStatusElement = document.querySelector<HTMLParagraphElement>("#sample-status");
 const previewElement = document.querySelector<HTMLVideoElement>("#camera-preview");
 const ticketOverlayElement = document.querySelector<HTMLDivElement>("#ticket-overlay");
+const nameRoiLabelElement = document.querySelector<HTMLParagraphElement>("#name-roi-label");
+const seatRoiLabelElement = document.querySelector<HTMLParagraphElement>("#seat-roi-label");
+const nameRoiPreviewElement = document.querySelector<HTMLCanvasElement>("#name-roi-preview");
+const seatRoiPreviewElement = document.querySelector<HTMLCanvasElement>("#seat-roi-preview");
 const cameraSelectElement = document.querySelector<HTMLSelectElement>("#camera-select");
 const switchFacingButton = document.querySelector<HTMLButtonElement>("#switch-facing-btn");
 const startCameraButton = document.querySelector<HTMLButtonElement>("#start-camera-btn");
@@ -81,6 +95,10 @@ if (
   !sampleStatusElement ||
   !previewElement ||
   !ticketOverlayElement ||
+  !nameRoiLabelElement ||
+  !seatRoiLabelElement ||
+  !nameRoiPreviewElement ||
+  !seatRoiPreviewElement ||
   !cameraSelectElement ||
   !switchFacingButton ||
   !startCameraButton ||
@@ -96,6 +114,50 @@ let normalizedFrameCount = 0;
 let roiExtractedFrameCount = 0;
 const sampleCanvas = document.createElement("canvas");
 const sampleContext = sampleCanvas.getContext("2d");
+const nameRoiPreviewContext = nameRoiPreviewElement.getContext("2d");
+const seatRoiPreviewContext = seatRoiPreviewElement.getContext("2d");
+
+const clearRoiPreview = (
+  canvas: HTMLCanvasElement,
+  context: CanvasRenderingContext2D | null,
+  labelElement: HTMLParagraphElement,
+  label: string
+): void => {
+  canvas.width = 1;
+  canvas.height = 1;
+  if (context) {
+    context.clearRect(0, 0, 1, 1);
+  }
+  labelElement.innerHTML = `<strong>${label} ROI:</strong> waiting`;
+};
+
+const renderRoiPreview = (
+  source: HTMLCanvasElement,
+  targetCanvas: HTMLCanvasElement,
+  targetContext: CanvasRenderingContext2D | null,
+  labelElement: HTMLParagraphElement,
+  label: string
+): void => {
+  if (!targetContext || source.width <= 0 || source.height <= 0) {
+    return;
+  }
+
+  if (targetCanvas.width !== source.width) {
+    targetCanvas.width = source.width;
+  }
+  if (targetCanvas.height !== source.height) {
+    targetCanvas.height = source.height;
+  }
+
+  targetContext.clearRect(0, 0, targetCanvas.width, targetCanvas.height);
+  targetContext.drawImage(source, 0, 0);
+  labelElement.innerHTML = `<strong>${label} ROI:</strong> ${source.width}x${source.height}`;
+};
+
+const clearRoiPreviews = (): void => {
+  clearRoiPreview(nameRoiPreviewElement, nameRoiPreviewContext, nameRoiLabelElement, "Name");
+  clearRoiPreview(seatRoiPreviewElement, seatRoiPreviewContext, seatRoiLabelElement, "Seat");
+};
 
 const inferFacingModeFromLabel = (label: string): "user" | "environment" | null => {
   const lowerLabel = label.toLowerCase();
@@ -220,6 +282,7 @@ const stopSampling = (): void => {
   sampleCount = 0;
   normalizedFrameCount = 0;
   roiExtractedFrameCount = 0;
+  clearRoiPreviews();
   setSampleStatus("idle");
 };
 
@@ -258,8 +321,28 @@ const sampleFrame = (): void => {
       if (fieldRois.success) {
         roiExtractedFrameCount += 1;
         pipelineDetails += `, field rois ${roiExtractedFrameCount}, name ${fieldRois.fields.name.region.width}x${fieldRois.fields.name.region.height}, seat ${fieldRois.fields.seat.region.width}x${fieldRois.fields.seat.region.height}`;
+        renderRoiPreview(
+          fieldRois.fields.name.canvas,
+          nameRoiPreviewElement,
+          nameRoiPreviewContext,
+          nameRoiLabelElement,
+          "Name"
+        );
+        renderRoiPreview(
+          fieldRois.fields.seat.canvas,
+          seatRoiPreviewElement,
+          seatRoiPreviewContext,
+          seatRoiLabelElement,
+          "Seat"
+        );
+      } else {
+        clearRoiPreviews();
       }
+    } else {
+      clearRoiPreviews();
     }
+  } else {
+    clearRoiPreviews();
   }
 
   sampleCount += 1;
