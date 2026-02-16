@@ -16,6 +16,7 @@ const isChrome = /Chrome/.test(navigator.userAgent) && !/Edg|OPR/.test(navigator
 const hasCameraApi = Boolean(navigator.mediaDevices?.getUserMedia);
 const scanController = new ScanController("Ready");
 const frameSampleIntervalMs = appConfig.retryIntervalMs;
+const ROI_PREVIEW_UPDATE_INTERVAL = 2;
 
 const latestOCRResult: OCRResult | null = null;
 let preferredFacingMode: "user" | "environment" = "environment";
@@ -136,7 +137,8 @@ const renderRoiPreview = (
   targetCanvas: HTMLCanvasElement,
   targetContext: CanvasRenderingContext2D | null,
   labelElement: HTMLParagraphElement,
-  label: string
+  label: string,
+  detail = ""
 ): void => {
   if (!targetContext || source.width <= 0 || source.height <= 0) {
     return;
@@ -151,7 +153,8 @@ const renderRoiPreview = (
 
   targetContext.clearRect(0, 0, targetCanvas.width, targetCanvas.height);
   targetContext.drawImage(source, 0, 0);
-  labelElement.innerHTML = `<strong>${label} ROI:</strong> ${source.width}x${source.height}`;
+  const suffix = detail ? `, ${detail}` : "";
+  labelElement.innerHTML = `<strong>${label} ROI:</strong> ${source.width}x${source.height}${suffix}`;
 };
 
 const clearRoiPreviews = (): void => {
@@ -315,26 +318,32 @@ const sampleFrame = (): void => {
     const normalizedTicket = normalizeTicketOrientationFromVideoFrame(previewElement, localization);
     if (normalizedTicket.success && normalizedTicket.canvas) {
       normalizedFrameCount += 1;
-      pipelineDetails = `, normalized ${normalizedFrameCount}, ticket roi ${normalizedTicket.canvas.width}x${normalizedTicket.canvas.height}, rotation ${normalizedTicket.appliedRotationDegrees.toFixed(1)}deg`;
+      pipelineDetails = `, normalized ${normalizedFrameCount}, ticket roi ${normalizedTicket.canvas.width}x${normalizedTicket.canvas.height}, rotation ${normalizedTicket.appliedRotationDegrees.toFixed(1)}deg, method ${normalizedTicket.method}, warp ${normalizedTicket.warpConfidence.toFixed(2)}`;
 
       const fieldRois = extractTicketFieldROIs(normalizedTicket.canvas);
       if (fieldRois.success) {
         roiExtractedFrameCount += 1;
         pipelineDetails += `, field rois ${roiExtractedFrameCount}, name ${fieldRois.fields.name.region.width}x${fieldRois.fields.name.region.height}, seat ${fieldRois.fields.seat.region.width}x${fieldRois.fields.seat.region.height}`;
-        renderRoiPreview(
-          fieldRois.fields.name.canvas,
-          nameRoiPreviewElement,
-          nameRoiPreviewContext,
-          nameRoiLabelElement,
-          "Name"
-        );
-        renderRoiPreview(
-          fieldRois.fields.seat.canvas,
-          seatRoiPreviewElement,
-          seatRoiPreviewContext,
-          seatRoiLabelElement,
-          "Seat"
-        );
+        const shouldUpdateRoiPreview = roiExtractedFrameCount % ROI_PREVIEW_UPDATE_INTERVAL === 0;
+        if (shouldUpdateRoiPreview) {
+          const roiDetail = normalizedTicket.method === "rotation-fallback" ? "fallback" : "perspective";
+          renderRoiPreview(
+            fieldRois.fields.name.canvas,
+            nameRoiPreviewElement,
+            nameRoiPreviewContext,
+            nameRoiLabelElement,
+            "Name",
+            roiDetail
+          );
+          renderRoiPreview(
+            fieldRois.fields.seat.canvas,
+            seatRoiPreviewElement,
+            seatRoiPreviewContext,
+            seatRoiLabelElement,
+            "Seat",
+            roiDetail
+          );
+        }
       } else {
         clearRoiPreviews();
       }

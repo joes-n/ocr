@@ -28,20 +28,21 @@ export type TicketFieldROIResult = {
 
 export type TicketFieldExtractorOptions = {
   layout?: Partial<TicketTemplateFieldLayout>;
+  clampMarginPx?: number;
 };
 
 const DEFAULT_TEMPLATE_LAYOUT: TicketTemplateFieldLayout = {
   name: {
-    x: 0.1,
-    y: 0.36,
-    width: 0.56,
-    height: 0.16
+    x: 0.205,
+    y: 0.6,
+    width: 0.48,
+    height: 0.22
   },
   seat: {
-    x: 0.67,
-    y: 0.54,
-    width: 0.21,
-    height: 0.19
+    x: 0.205,
+    y: 0.795,
+    width: 0.49,
+    height: 0.15
   }
 };
 
@@ -60,30 +61,43 @@ const createEmptyField = (): TicketFieldROI => {
 const makeFieldROI = (
   source: HTMLCanvasElement,
   ratios: TicketFieldRatios,
-  sourceContext: CanvasRenderingContext2D
+  sourceContext: CanvasRenderingContext2D,
+  clampMarginPx: number
 ): TicketFieldROI => {
-  const x = Math.round(clamp(ratios.x, 0, 1) * source.width);
-  const y = Math.round(clamp(ratios.y, 0, 1) * source.height);
-  const width = Math.max(1, Math.round(clamp(ratios.width, 0.02, 1) * source.width));
-  const height = Math.max(1, Math.round(clamp(ratios.height, 0.02, 1) * source.height));
+  const x = Math.round(clamp(ratios.x, 0, 1) * source.width) - clampMarginPx;
+  const y = Math.round(clamp(ratios.y, 0, 1) * source.height) - clampMarginPx;
+  const width = Math.max(1, Math.round(clamp(ratios.width, 0.02, 1) * source.width) + clampMarginPx * 2);
+  const height = Math.max(1, Math.round(clamp(ratios.height, 0.02, 1) * source.height) + clampMarginPx * 2);
 
-  const right = clamp(x + width, x + 1, source.width);
-  const bottom = clamp(y + height, y + 1, source.height);
-  const clippedWidth = Math.max(1, right - x);
-  const clippedHeight = Math.max(1, bottom - y);
+  const left = clamp(x, 0, source.width - 1);
+  const top = clamp(y, 0, source.height - 1);
+  const right = clamp(x + width, left + 1, source.width);
+  const bottom = clamp(y + height, top + 1, source.height);
+  const clippedWidth = Math.max(1, right - left);
+  const clippedHeight = Math.max(1, bottom - top);
 
   const canvas = document.createElement("canvas");
   canvas.width = clippedWidth;
   canvas.height = clippedHeight;
   const fieldContext = canvas.getContext("2d");
   if (fieldContext) {
-    fieldContext.drawImage(sourceContext.canvas, x, y, clippedWidth, clippedHeight, 0, 0, clippedWidth, clippedHeight);
+    fieldContext.drawImage(
+      sourceContext.canvas,
+      left,
+      top,
+      clippedWidth,
+      clippedHeight,
+      0,
+      0,
+      clippedWidth,
+      clippedHeight
+    );
   }
 
   return {
     region: {
-      x,
-      y,
+      x: left,
+      y: top,
       width: clippedWidth,
       height: clippedHeight
     },
@@ -119,10 +133,11 @@ export const extractTicketFieldROIs = (
     name: { ...DEFAULT_TEMPLATE_LAYOUT.name, ...(options.layout?.name ?? {}) },
     seat: { ...DEFAULT_TEMPLATE_LAYOUT.seat, ...(options.layout?.seat ?? {}) }
   };
+  const clampMarginPx = Math.max(0, Math.round(options.clampMarginPx ?? 4));
 
   const fields: Record<TicketFieldKey, TicketFieldROI> = {
-    name: makeFieldROI(normalizedTicketCanvas, layout.name, sourceContext),
-    seat: makeFieldROI(normalizedTicketCanvas, layout.seat, sourceContext)
+    name: makeFieldROI(normalizedTicketCanvas, layout.name, sourceContext, clampMarginPx),
+    seat: makeFieldROI(normalizedTicketCanvas, layout.seat, sourceContext, clampMarginPx)
   };
 
   return {
