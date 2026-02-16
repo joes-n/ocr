@@ -39,6 +39,8 @@ p {
 
 .preview-frame {
   position: relative;
+  width: 100%;
+  max-width: 640px;
   border: 1px solid #d1d5db;
   border-radius: 0.75rem;
   overflow: hidden;
@@ -48,9 +50,7 @@ p {
 #camera-preview {
   display: block;
   width: 100%;
-  max-width: 640px;
-  aspect-ratio: 16 / 9;
-  object-fit: contain;
+  height: auto;
 }
 
 .ticket-overlay {

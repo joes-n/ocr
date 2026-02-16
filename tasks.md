@@ -23,7 +23,7 @@ Source spec: `SOFTWARE_SPEC.md`
   Trace: Spec §5 FR-2
 - [x] `T-021` Implement rotation/orientation normalization to canonical ticket view.  
   Trace: Spec §4.1, §5 FR-2, §9
-- [ ] `T-022` Extract ROIs for name and seat fields from normalized ticket coordinates.  
+- [x] `T-022` Extract ROIs for name and seat fields from normalized ticket coordinates.  
   Trace: Spec §9
 
 ## 3. OCR Integration (No External Provider)

@@ -3,6 +3,7 @@ import { appConfig } from "./config";
 import { ScanController } from "./scan-controller";
 import { localizeTicketFromVideoFrame } from "./ticket-localizer";
 import { normalizeTicketOrientationFromVideoFrame } from "./ticket-normalizer";
+import { extractTicketFieldROIs } from "./ticket-roi";
 import type { AudioResolution, OCRResult } from "./types";
 
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -92,6 +93,7 @@ let cameraStream: MediaStream | null = null;
 let samplingTimerId: number | null = null;
 let sampleCount = 0;
 let normalizedFrameCount = 0;
+let roiExtractedFrameCount = 0;
 const sampleCanvas = document.createElement("canvas");
 const sampleContext = sampleCanvas.getContext("2d");
 
@@ -217,6 +219,7 @@ const stopSampling = (): void => {
 
   sampleCount = 0;
   normalizedFrameCount = 0;
+  roiExtractedFrameCount = 0;
   setSampleStatus("idle");
 };
 
@@ -244,19 +247,25 @@ const sampleFrame = (): void => {
   const localization = localizeTicketFromVideoFrame(previewElement);
   renderTicketOverlay(localization, width, height);
 
-  let normalizationDetails = "";
+  let pipelineDetails = "";
   if (localization.found) {
     const normalizedTicket = normalizeTicketOrientationFromVideoFrame(previewElement, localization);
     if (normalizedTicket.success && normalizedTicket.canvas) {
       normalizedFrameCount += 1;
-      normalizationDetails = `, normalized frames ${normalizedFrameCount}, roi ${normalizedTicket.canvas.width}x${normalizedTicket.canvas.height}, rotation ${normalizedTicket.appliedRotationDegrees.toFixed(1)}deg`;
+      pipelineDetails = `, normalized ${normalizedFrameCount}, ticket roi ${normalizedTicket.canvas.width}x${normalizedTicket.canvas.height}, rotation ${normalizedTicket.appliedRotationDegrees.toFixed(1)}deg`;
+
+      const fieldRois = extractTicketFieldROIs(normalizedTicket.canvas);
+      if (fieldRois.success) {
+        roiExtractedFrameCount += 1;
+        pipelineDetails += `, field rois ${roiExtractedFrameCount}, name ${fieldRois.fields.name.region.width}x${fieldRois.fields.name.region.height}, seat ${fieldRois.fields.seat.region.width}x${fieldRois.fields.seat.region.height}`;
+      }
     }
   }
 
   sampleCount += 1;
   setSampleStatus(
     localization.found
-      ? `running (${sampleCount} samples, ticket confidence ${localization.confidence.toFixed(2)}${normalizationDetails})`
+      ? `running (${sampleCount} samples, ticket confidence ${localization.confidence.toFixed(2)}${pipelineDetails})`
       : `running (${sampleCount} samples, searching ticket)`
   );
 };

@@ -16,6 +16,7 @@ MVP scaffold for a desktop Chrome web app.
 - `T-012` added configurable frame sampling loop with start/stop lifecycle handling.
 - `T-020` added in-frame known-template ticket localization and live overlay.
 - `T-021` implemented orientation normalization to canonical ticket view in `src/ticket-normalizer.ts`.
+- `T-022` implemented extraction of name and seat ROIs from normalized ticket coordinates in `src/ticket-roi.ts`.
 - Webcam, OCR, validation, and audio flow are implemented in later tasks.
 
 ## Runtime Config (Optional)
