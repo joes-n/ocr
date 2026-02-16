@@ -2,6 +2,7 @@ import "./styles.css";
 import { appConfig } from "./config";
 import { ScanController } from "./scan-controller";
 import { localizeTicketFromVideoFrame } from "./ticket-localizer";
+import { normalizeTicketOrientationFromVideoFrame } from "./ticket-normalizer";
 import type { AudioResolution, OCRResult } from "./types";
 
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -90,6 +91,7 @@ if (
 let cameraStream: MediaStream | null = null;
 let samplingTimerId: number | null = null;
 let sampleCount = 0;
+let normalizedFrameCount = 0;
 const sampleCanvas = document.createElement("canvas");
 const sampleContext = sampleCanvas.getContext("2d");
 
@@ -214,6 +216,7 @@ const stopSampling = (): void => {
   }
 
   sampleCount = 0;
+  normalizedFrameCount = 0;
   setSampleStatus("idle");
 };
 
@@ -240,10 +243,20 @@ const sampleFrame = (): void => {
   sampleContext.drawImage(previewElement, 0, 0, width, height);
   const localization = localizeTicketFromVideoFrame(previewElement);
   renderTicketOverlay(localization, width, height);
+
+  let normalizationDetails = "";
+  if (localization.found) {
+    const normalizedTicket = normalizeTicketOrientationFromVideoFrame(previewElement, localization);
+    if (normalizedTicket.success && normalizedTicket.canvas) {
+      normalizedFrameCount += 1;
+      normalizationDetails = `, normalized frames ${normalizedFrameCount}, roi ${normalizedTicket.canvas.width}x${normalizedTicket.canvas.height}, rotation ${normalizedTicket.appliedRotationDegrees.toFixed(1)}deg`;
+    }
+  }
+
   sampleCount += 1;
   setSampleStatus(
     localization.found
-      ? `running (${sampleCount} samples, ticket confidence ${localization.confidence.toFixed(2)})`
+      ? `running (${sampleCount} samples, ticket confidence ${localization.confidence.toFixed(2)}${normalizationDetails})`
       : `running (${sampleCount} samples, searching ticket)`
   );
 };

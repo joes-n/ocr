@@ -15,6 +15,7 @@ MVP scaffold for a desktop Chrome web app.
 - `T-011` implemented scan state controller in `src/scan-controller.ts`.
 - `T-012` added configurable frame sampling loop with start/stop lifecycle handling.
 - `T-020` added in-frame known-template ticket localization and live overlay.
+- `T-021` implemented orientation normalization to canonical ticket view in `src/ticket-normalizer.ts`.
 - Webcam, OCR, validation, and audio flow are implemented in later tasks.
 
 ## Runtime Config (Optional)
