@@ -217,13 +217,13 @@ const renderTicketOverlays = (
   frameWidth: number,
   frameHeight: number
 ): void => {
-  if (!localization.found || frameWidth <= 0 || frameHeight <= 0) {
+  if (!localization.ticketFound || frameWidth <= 0 || frameHeight <= 0) {
     hideTicketOverlays();
     return;
   }
 
   renderOverlay(ticketOverlayElement, localization.ticketBox ?? localization.box, frameWidth, frameHeight);
-  renderOverlay(labelOverlayElement, localization.labelBox, frameWidth, frameHeight);
+  renderOverlay(labelOverlayElement, localization.labelFound ? localization.labelBox : null, frameWidth, frameHeight);
 };
 
 scanController.subscribe(setAppState);
@@ -264,7 +264,7 @@ const sampleFrame = (): void => {
   renderTicketOverlays(localization, width, height);
 
   let pipelineDetails = "";
-  if (localization.found) {
+  if (localization.ticketFound) {
     const normalizedTicket = normalizeTicketOrientationFromVideoFrame(previewElement, localization);
     if (normalizedTicket.success && normalizedTicket.canvas) {
       normalizedFrameCount += 1;
@@ -273,16 +273,16 @@ const sampleFrame = (): void => {
   }
 
   const debugDetails = localization.debug
-    ? `, stage ${localization.debug.stage}, ticket ${localization.debug.ticketScore.toFixed(2)}, label ${localization.debug.labelScore.toFixed(2)}`
+    ? `, flags t:${localization.ticketFound ? "1" : "0"} l:${localization.labelFound ? "1" : "0"}, stage ${localization.debug.stage}, ticket ${localization.debug.ticketScore.toFixed(2)}, label ${localization.debug.labelScore.toFixed(2)}, light ${localization.debug.frameLighting}`
     : "";
   const missReasons =
-    localization.debug && localization.debug.reasons.length > 0
+    localization.debug && (!localization.ticketFound || !localization.labelFound) && localization.debug.reasons.length > 0
       ? `, reasons ${localization.debug.reasons.slice(0, 4).join("|")}`
       : "";
 
   sampleCount += 1;
   setSampleStatus(
-    localization.found
+    localization.ticketFound
       ? `running (${sampleCount} samples, ticket confidence ${localization.confidence.toFixed(2)}${debugDetails}${pipelineDetails})`
       : `running (${sampleCount} samples, searching ticket${debugDetails}${missReasons})`
   );

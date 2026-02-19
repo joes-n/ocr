@@ -857,7 +857,10 @@ export const normalizeTicketOrientationFromVideoFrame = (
   localization: TicketLocalizationResult,
   options: TicketNormalizerOptions = {}
 ): TicketNormalizationResult => {
-  if (!frameContext || !cropContext || !localization.found || !localization.box) {
+  const hasTicket = localization.ticketFound ?? localization.found;
+  const ticketBox = localization.ticketBox ?? localization.box;
+
+  if (!frameContext || !cropContext || !hasTicket || !ticketBox) {
     return {
       success: false,
       canvas: null,
@@ -890,12 +893,12 @@ export const normalizeTicketOrientationFromVideoFrame = (
   frameContext.drawImage(video, 0, 0, sourceWidth, sourceHeight);
 
   const paddingRatio = clamp(options.paddingRatio ?? DEFAULT_PADDING_RATIO, 0, MAX_PADDING_RATIO);
-  const padX = Math.round(localization.box.width * paddingRatio);
-  const padY = Math.round(localization.box.height * paddingRatio);
-  const cropX = clamp(localization.box.x - padX, 0, sourceWidth - 1);
-  const cropY = clamp(localization.box.y - padY, 0, sourceHeight - 1);
-  const cropRight = clamp(localization.box.x + localization.box.width + padX, cropX + 1, sourceWidth);
-  const cropBottom = clamp(localization.box.y + localization.box.height + padY, cropY + 1, sourceHeight);
+  const padX = Math.round(ticketBox.width * paddingRatio);
+  const padY = Math.round(ticketBox.height * paddingRatio);
+  const cropX = clamp(ticketBox.x - padX, 0, sourceWidth - 1);
+  const cropY = clamp(ticketBox.y - padY, 0, sourceHeight - 1);
+  const cropRight = clamp(ticketBox.x + ticketBox.width + padX, cropX + 1, sourceWidth);
+  const cropBottom = clamp(ticketBox.y + ticketBox.height + padY, cropY + 1, sourceHeight);
   const cropWidth = Math.max(1, cropRight - cropX);
   const cropHeight = Math.max(1, cropBottom - cropY);
 
