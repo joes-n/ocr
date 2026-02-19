@@ -47,6 +47,14 @@ type ComponentCandidate = {
   edgeTouchRatio: number;
 };
 
+type BlueComponentCandidate = {
+  box: TicketBoundingBox;
+  areaRatio: number;
+  fillRatio: number;
+  blueness: number;
+  edgeTouchRatio: number;
+};
+
 type ThresholdProfile = {
   frameLighting: FrameLighting;
   minValue: number;
@@ -62,6 +70,14 @@ const MIN_FILL_RATIO = 0.48;
 const MIN_ASPECT_RATIO = 1.0;
 const MAX_ASPECT_RATIO = 9.5;
 const WHITE_BAND = 0.12;
+const BLUE_MIN_VALUE = 0.2;
+const BLUE_MIN_SATURATION = 0.22;
+const BLUE_DOMINANCE_THRESHOLD = 18;
+const BLUE_MIN_AREA_RATIO = 0.01;
+const BLUE_MAX_AREA_RATIO = 0.98;
+const BLUE_MIN_FILL_RATIO = 0.2;
+const BLUE_MIN_ASPECT_RATIO = 1.1;
+const BLUE_MAX_ASPECT_RATIO = 8.5;
 
 const workCanvas = document.createElement("canvas");
 const workContext = workCanvas.getContext("2d", { willReadFrequently: true });
@@ -211,8 +227,22 @@ const buildFailureResult = (
         selectedWhiteness: 0,
         selectedFillRatio: 0
       }
-    : undefined
+      : undefined
 });
+
+const containsBox = (container: TicketBoundingBox, target: TicketBoundingBox): boolean => {
+  const containerRight = container.x + container.width;
+  const containerBottom = container.y + container.height;
+  const targetRight = target.x + target.width;
+  const targetBottom = target.y + target.height;
+
+  return (
+    target.x >= container.x &&
+    target.y >= container.y &&
+    targetRight <= containerRight &&
+    targetBottom <= containerBottom
+  );
+};
 
 export const localizeTicketFromVideoFrame = (
   sourceVideo: HTMLVideoElement,
@@ -253,6 +283,8 @@ export const localizeTicketFromVideoFrame = (
 
   const whiteness = new Float32Array(frameArea);
   const whiteMask = new Uint8Array(frameArea);
+  const blueness = new Float32Array(frameArea);
+  const blueMask = new Uint8Array(frameArea);
 
   for (let index = 0; index < frameArea; index += 1) {
     const offset = index * 4;
@@ -266,8 +298,11 @@ export const localizeTicketFromVideoFrame = (
     const value = maxChannel / 255;
     const saturation = maxChannel === 0 ? 0 : spread / maxChannel;
     const whitenessScore = value * (1 - saturation) * ((255 - spread) / 255);
+    const blueDominance = blue - Math.max(red, green);
+    const bluenessScore = clamp((blueDominance / 255) * saturation * value, 0, 1);
 
     whiteness[index] = whitenessScore;
+    blueness[index] = bluenessScore;
 
     if (
       value >= profile.minValue &&
@@ -276,6 +311,14 @@ export const localizeTicketFromVideoFrame = (
       whitenessScore >= profile.minWhiteness
     ) {
       whiteMask[index] = 1;
+    }
+
+    if (
+      value >= BLUE_MIN_VALUE &&
+      saturation >= BLUE_MIN_SATURATION &&
+      blueDominance >= BLUE_DOMINANCE_THRESHOLD
+    ) {
+      blueMask[index] = 1;
     }
   }
 
@@ -397,10 +440,132 @@ export const localizeTicketFromVideoFrame = (
   });
 
   const selected = selectionPool[0];
-  const selectedBox = toScaledBox(selected.box, scale, frameWidth, frameHeight);
+  const selectedLabelBox = toScaledBox(selected.box, scale, frameWidth, frameHeight);
+
+  const cleanedBlueMask = close3x3(open3x3(blueMask, sampleWidth, sampleHeight), sampleWidth, sampleHeight);
+  const blueVisited = new Uint8Array(frameArea);
+  const blueCandidates: BlueComponentCandidate[] = [];
+
+  for (let start = 0; start < frameArea; start += 1) {
+    if (cleanedBlueMask[start] === 0 || blueVisited[start] === 1) {
+      continue;
+    }
+
+    const stack: number[] = [start];
+    blueVisited[start] = 1;
+
+    let minX = sampleWidth - 1;
+    let minY = sampleHeight - 1;
+    let maxX = 0;
+    let maxY = 0;
+    let pixelCount = 0;
+    let bluenessSum = 0;
+
+    while (stack.length > 0) {
+      const index = stack.pop() as number;
+      const x = index % sampleWidth;
+      const y = (index - x) / sampleWidth;
+
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+      pixelCount += 1;
+      bluenessSum += blueness[index];
+
+      const left = x > 0 ? index - 1 : -1;
+      const right = x + 1 < sampleWidth ? index + 1 : -1;
+      const up = y > 0 ? index - sampleWidth : -1;
+      const down = y + 1 < sampleHeight ? index + sampleWidth : -1;
+
+      if (left >= 0 && cleanedBlueMask[left] === 1 && blueVisited[left] === 0) {
+        blueVisited[left] = 1;
+        stack.push(left);
+      }
+      if (right >= 0 && cleanedBlueMask[right] === 1 && blueVisited[right] === 0) {
+        blueVisited[right] = 1;
+        stack.push(right);
+      }
+      if (up >= 0 && cleanedBlueMask[up] === 1 && blueVisited[up] === 0) {
+        blueVisited[up] = 1;
+        stack.push(up);
+      }
+      if (down >= 0 && cleanedBlueMask[down] === 1 && blueVisited[down] === 0) {
+        blueVisited[down] = 1;
+        stack.push(down);
+      }
+    }
+
+    const width = maxX - minX + 1;
+    const height = maxY - minY + 1;
+    const bboxArea = width * height;
+    if (bboxArea <= 0 || pixelCount <= 0) {
+      continue;
+    }
+
+    const areaRatio = bboxArea / frameArea;
+    const fillRatio = pixelCount / bboxArea;
+    const aspectRatio = Math.max(width / Math.max(1, height), height / Math.max(1, width));
+    const edgeTouchRatio =
+      ((minX <= 1 ? 1 : 0) +
+        (minY <= 1 ? 1 : 0) +
+        (maxX >= sampleWidth - 2 ? 1 : 0) +
+        (maxY >= sampleHeight - 2 ? 1 : 0)) /
+      4;
+
+    if (areaRatio < BLUE_MIN_AREA_RATIO || areaRatio > BLUE_MAX_AREA_RATIO) {
+      continue;
+    }
+    if (fillRatio < BLUE_MIN_FILL_RATIO) {
+      continue;
+    }
+    if (aspectRatio < BLUE_MIN_ASPECT_RATIO || aspectRatio > BLUE_MAX_ASPECT_RATIO) {
+      continue;
+    }
+
+    blueCandidates.push({
+      box: {
+        x: minX,
+        y: minY,
+        width,
+        height
+      },
+      areaRatio,
+      fillRatio,
+      blueness: bluenessSum / pixelCount,
+      edgeTouchRatio
+    });
+  }
+
+  if (blueCandidates.length === 0) {
+    reasons.push("no-blue-ticket");
+    return buildFailureResult(reasons, profile.frameLighting, debugEnabled);
+  }
+
+  const blueCandidatesContainingLabel = blueCandidates.filter((candidate) => containsBox(candidate.box, selected.box));
+  if (blueCandidatesContainingLabel.length === 0) {
+    reasons.push("label-outside-ticket");
+    return buildFailureResult(reasons, profile.frameLighting, debugEnabled);
+  }
+
+  blueCandidatesContainingLabel.sort((left, right) => {
+    if (left.edgeTouchRatio !== right.edgeTouchRatio) {
+      return left.edgeTouchRatio - right.edgeTouchRatio;
+    }
+    if (left.areaRatio !== right.areaRatio) {
+      return left.areaRatio - right.areaRatio;
+    }
+    if (left.blueness !== right.blueness) {
+      return right.blueness - left.blueness;
+    }
+    return right.fillRatio - left.fillRatio;
+  });
+
+  const selectedBlueTicket = blueCandidatesContainingLabel[0];
+  const selectedTicketBox = toScaledBox(selectedBlueTicket.box, scale, frameWidth, frameHeight);
   const areaSpan = Math.max(0.0001, maxAreaRatio - minAreaRatio);
   const areaNorm = clamp((selected.areaRatio - minAreaRatio) / areaSpan, 0, 1);
-  const confidence = clamp(
+  const labelConfidence = clamp(
     0.48 * selected.whiteness +
       0.28 * selected.fillRatio +
       0.16 * (1 - areaNorm) +
@@ -408,21 +573,29 @@ export const localizeTicketFromVideoFrame = (
     0,
     1
   );
+  const ticketConfidence = clamp(
+    0.55 * selectedBlueTicket.blueness +
+      0.25 * selectedBlueTicket.fillRatio +
+      0.2 * (1 - selectedBlueTicket.edgeTouchRatio),
+    0,
+    1
+  );
+  const confidence = clamp(0.55 * labelConfidence + 0.45 * ticketConfidence, 0, 1);
 
   return {
     found: true,
     ticketFound: true,
     labelFound: true,
     confidence,
-    box: selectedBox,
-    ticketBox: selectedBox,
-    labelBox: selectedBox,
+    box: selectedTicketBox,
+    ticketBox: selectedTicketBox,
+    labelBox: selectedLabelBox,
     debug: debugEnabled
       ? {
           stage: "white-rectangle",
           reasons,
-          ticketScore: confidence,
-          labelScore: selected.whiteness,
+          ticketScore: ticketConfidence,
+          labelScore: labelConfidence,
           frameLighting: profile.frameLighting,
           candidateCount: selectionPool.length,
           selectedAreaRatio: selected.areaRatio,
