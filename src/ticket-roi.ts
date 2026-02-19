@@ -46,6 +46,21 @@ const DEFAULT_TEMPLATE_LAYOUT: TicketTemplateFieldLayout = {
   }
 };
 
+const DEFAULT_LABEL_LAYOUT: TicketTemplateFieldLayout = {
+  name: {
+    x: 0.08,
+    y: 0.14,
+    width: 0.84,
+    height: 0.46
+  },
+  seat: {
+    x: 0.08,
+    y: 0.62,
+    width: 0.84,
+    height: 0.3
+  }
+};
+
 const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value));
 
 const createEmptyField = (): TicketFieldROI => {
@@ -105,8 +120,9 @@ const makeFieldROI = (
   };
 };
 
-export const extractTicketFieldROIs = (
-  normalizedTicketCanvas: HTMLCanvasElement | null,
+const extractFieldROIsFromCanvas = (
+  sourceCanvas: HTMLCanvasElement | null,
+  defaultLayout: TicketTemplateFieldLayout,
   options: TicketFieldExtractorOptions = {}
 ): TicketFieldROIResult => {
   const emptyFields: Record<TicketFieldKey, TicketFieldROI> = {
@@ -114,14 +130,14 @@ export const extractTicketFieldROIs = (
     seat: createEmptyField()
   };
 
-  if (!normalizedTicketCanvas || normalizedTicketCanvas.width <= 0 || normalizedTicketCanvas.height <= 0) {
+  if (!sourceCanvas || sourceCanvas.width <= 0 || sourceCanvas.height <= 0) {
     return {
       success: false,
       fields: emptyFields
     };
   }
 
-  const sourceContext = normalizedTicketCanvas.getContext("2d");
+  const sourceContext = sourceCanvas.getContext("2d");
   if (!sourceContext) {
     return {
       success: false,
@@ -130,14 +146,14 @@ export const extractTicketFieldROIs = (
   }
 
   const layout: TicketTemplateFieldLayout = {
-    name: { ...DEFAULT_TEMPLATE_LAYOUT.name, ...(options.layout?.name ?? {}) },
-    seat: { ...DEFAULT_TEMPLATE_LAYOUT.seat, ...(options.layout?.seat ?? {}) }
+    name: { ...defaultLayout.name, ...(options.layout?.name ?? {}) },
+    seat: { ...defaultLayout.seat, ...(options.layout?.seat ?? {}) }
   };
   const clampMarginPx = Math.max(0, Math.round(options.clampMarginPx ?? 4));
 
   const fields: Record<TicketFieldKey, TicketFieldROI> = {
-    name: makeFieldROI(normalizedTicketCanvas, layout.name, sourceContext, clampMarginPx),
-    seat: makeFieldROI(normalizedTicketCanvas, layout.seat, sourceContext, clampMarginPx)
+    name: makeFieldROI(sourceCanvas, layout.name, sourceContext, clampMarginPx),
+    seat: makeFieldROI(sourceCanvas, layout.seat, sourceContext, clampMarginPx)
   };
 
   return {
@@ -145,3 +161,13 @@ export const extractTicketFieldROIs = (
     fields
   };
 };
+
+export const extractTicketFieldROIs = (
+  normalizedTicketCanvas: HTMLCanvasElement | null,
+  options: TicketFieldExtractorOptions = {}
+): TicketFieldROIResult => extractFieldROIsFromCanvas(normalizedTicketCanvas, DEFAULT_TEMPLATE_LAYOUT, options);
+
+export const extractLabelFieldROIs = (
+  normalizedLabelCanvas: HTMLCanvasElement | null,
+  options: TicketFieldExtractorOptions = {}
+): TicketFieldROIResult => extractFieldROIsFromCanvas(normalizedLabelCanvas, DEFAULT_LABEL_LAYOUT, options);

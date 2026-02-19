@@ -2,7 +2,7 @@ import "./styles.css";
 import { appConfig } from "./config";
 import { ScanController } from "./scan-controller";
 import { localizeTicketFromVideoFrame } from "./ticket-localizer";
-import { normalizeTicketOrientationFromVideoFrame } from "./ticket-normalizer";
+import { normalizeLabelFromVideoFrame, normalizeTicketOrientationFromVideoFrame } from "./ticket-normalizer";
 import type { AudioResolution, OCRResult } from "./types";
 
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -264,11 +264,18 @@ const sampleFrame = (): void => {
   renderTicketOverlays(localization, width, height);
 
   let pipelineDetails = "";
+  if (localization.labelFound) {
+    const normalizedLabel = normalizeLabelFromVideoFrame(previewElement, localization);
+    if (normalizedLabel.success && normalizedLabel.canvas) {
+      pipelineDetails += `, label roi ${normalizedLabel.canvas.width}x${normalizedLabel.canvas.height}`;
+    }
+  }
+
   if (localization.ticketFound) {
     const normalizedTicket = normalizeTicketOrientationFromVideoFrame(previewElement, localization);
     if (normalizedTicket.success && normalizedTicket.canvas) {
       normalizedFrameCount += 1;
-      pipelineDetails = `, normalized ${normalizedFrameCount}, ticket roi ${normalizedTicket.canvas.width}x${normalizedTicket.canvas.height}, rotation ${normalizedTicket.appliedRotationDegrees.toFixed(1)}deg, method ${normalizedTicket.method}, warp ${normalizedTicket.warpConfidence.toFixed(2)}`;
+      pipelineDetails += `, normalized ${normalizedFrameCount}, ticket roi ${normalizedTicket.canvas.width}x${normalizedTicket.canvas.height}, rotation ${normalizedTicket.appliedRotationDegrees.toFixed(1)}deg, method ${normalizedTicket.method}, warp ${normalizedTicket.warpConfidence.toFixed(2)}`;
     }
   }
 

@@ -1,4 +1,4 @@
-import type { TicketLocalizationResult } from "./ticket-localizer";
+import type { TicketBoundingBox, TicketLocalizationResult } from "./ticket-localizer";
 
 export type Point2D = {
   x: number;
@@ -35,6 +35,21 @@ export type TicketNormalizerOptions = {
   includeRotationVariants?: boolean;
 };
 
+export type LabelNormalizationMethod = "label-rect";
+
+export type LabelNormalizationResult = {
+  success: boolean;
+  canvas: HTMLCanvasElement | null;
+  method: LabelNormalizationMethod;
+  sourceBox: TicketBoundingBox | null;
+};
+
+export type LabelNormalizerOptions = {
+  paddingRatio?: number;
+  targetWidth?: number;
+  targetHeight?: number;
+};
+
 type ComponentCandidate = {
   pixels: number[];
   area: number;
@@ -49,11 +64,14 @@ type ComponentCandidate = {
 
 const MAX_PADDING_RATIO = 0.25;
 const DEFAULT_PADDING_RATIO = 0.04;
+const DEFAULT_LABEL_PADDING_RATIO = 0.06;
 const MIN_EDGE_POINTS = 180;
 const MIN_ANISOTROPY = 0.08;
 const QUAD_ESTIMATION_MAX_DIMENSION = 480;
 const CANONICAL_TICKET_WIDTH = 1250;
 const CANONICAL_TICKET_HEIGHT = 500;
+const CANONICAL_LABEL_WIDTH = 800;
+const CANONICAL_LABEL_HEIGHT = 250;
 const MIN_COMPONENT_AREA_RATIO = 0.18;
 const TARGET_TICKET_ASPECT = 2.5;
 const MIN_TICKET_ASPECT = 2.1;
@@ -849,6 +867,77 @@ const estimatePerspectiveQuad = (crop: HTMLCanvasElement): { quad: TicketQuad; c
   return {
     quad: scaleQuad(scaledQuad, scaleX, scaleY),
     confidence: validation.confidence
+  };
+};
+
+export const normalizeLabelFromVideoFrame = (
+  video: HTMLVideoElement,
+  localization: TicketLocalizationResult,
+  options: LabelNormalizerOptions = {}
+): LabelNormalizationResult => {
+  const labelBox = localization.labelFound ? localization.labelBox : null;
+
+  if (!frameContext || !labelBox) {
+    return {
+      success: false,
+      canvas: null,
+      method: "label-rect",
+      sourceBox: null
+    };
+  }
+
+  const sourceWidth = video.videoWidth;
+  const sourceHeight = video.videoHeight;
+  if (sourceWidth <= 0 || sourceHeight <= 0) {
+    return {
+      success: false,
+      canvas: null,
+      method: "label-rect",
+      sourceBox: null
+    };
+  }
+
+  frameCanvas.width = sourceWidth;
+  frameCanvas.height = sourceHeight;
+  frameContext.drawImage(video, 0, 0, sourceWidth, sourceHeight);
+
+  const paddingRatio = clamp(options.paddingRatio ?? DEFAULT_LABEL_PADDING_RATIO, 0, MAX_PADDING_RATIO);
+  const padX = Math.round(labelBox.width * paddingRatio);
+  const padY = Math.round(labelBox.height * paddingRatio);
+  const cropX = clamp(labelBox.x - padX, 0, sourceWidth - 1);
+  const cropY = clamp(labelBox.y - padY, 0, sourceHeight - 1);
+  const cropRight = clamp(labelBox.x + labelBox.width + padX, cropX + 1, sourceWidth);
+  const cropBottom = clamp(labelBox.y + labelBox.height + padY, cropY + 1, sourceHeight);
+  const cropWidth = Math.max(1, cropRight - cropX);
+  const cropHeight = Math.max(1, cropBottom - cropY);
+
+  const targetWidth = Math.max(1, Math.round(options.targetWidth ?? CANONICAL_LABEL_WIDTH));
+  const targetHeight = Math.max(1, Math.round(options.targetHeight ?? CANONICAL_LABEL_HEIGHT));
+  const output = document.createElement("canvas");
+  output.width = targetWidth;
+  output.height = targetHeight;
+  const outputContext = output.getContext("2d");
+  if (!outputContext) {
+    return {
+      success: false,
+      canvas: null,
+      method: "label-rect",
+      sourceBox: null
+    };
+  }
+
+  outputContext.drawImage(frameCanvas, cropX, cropY, cropWidth, cropHeight, 0, 0, targetWidth, targetHeight);
+
+  return {
+    success: true,
+    canvas: output,
+    method: "label-rect",
+    sourceBox: {
+      x: cropX,
+      y: cropY,
+      width: cropWidth,
+      height: cropHeight
+    }
   };
 };
 
