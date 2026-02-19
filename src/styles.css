@@ -76,31 +76,6 @@ p {
   display: none;
 }
 
-.roi-debug-panel {
-  width: 100%;
-  max-width: 640px;
-  display: grid;
-  gap: 0.5rem;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-}
-
-.roi-debug-card {
-  border: 1px solid #d1d5db;
-  border-radius: 0.5rem;
-  background: #f9fafb;
-  padding: 0.5rem;
-  display: grid;
-  gap: 0.4rem;
-}
-
-.roi-preview-canvas {
-  width: 100%;
-  border: 1px solid #cbd5e1;
-  border-radius: 0.35rem;
-  background: #0f172a;
-  image-rendering: pixelated;
-}
-
 .actions {
   display: flex;
   gap: 0.5rem;

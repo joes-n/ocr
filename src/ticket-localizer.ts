@@ -68,6 +68,7 @@ type EdgeCandidate = {
 
 export type TicketLocalizationDebug = {
   stage: "blue-then-label" | "label-fallback" | "edge-fallback";
+  reasons: string[];
   ticketScore: number;
   labelScore: number;
   edgeScore: number;
@@ -87,9 +88,9 @@ export type TicketLocalizerOptions = {
 
 const LOCALIZE_MAX_DIMENSION = 360;
 
-const MIN_TICKET_AREA_RATIO = 0.05;
-const MIN_EDGE_AREA_RATIO = 0.05;
-const MIN_LABEL_AREA_RATIO = 0.003;
+const MIN_TICKET_AREA_RATIO = 0.03;
+const MIN_EDGE_AREA_RATIO = 0.03;
+const MIN_LABEL_AREA_RATIO = 0.0015;
 
 const TICKET_TARGET_ASPECT = 2.5;
 const TICKET_ASPECT_MIN = 1.8;
@@ -103,8 +104,8 @@ const BLUE_SAT_CORE_MIN = 0.2;
 const BLUE_SAT_SUPPORT_MIN = 0.12;
 const BLUE_VALUE_MIN = 0.12;
 
-const LABEL_SATURATION_MAX = 0.22;
-const LABEL_VALUE_MIN = 0.72;
+const LABEL_SATURATION_MAX = 0.26;
+const LABEL_VALUE_MIN = 0.68;
 
 const SKIN_HUE_A_MIN = 0;
 const SKIN_HUE_A_MAX = 35;
@@ -118,12 +119,14 @@ const SKIN_HEAVY_RATIO_THRESHOLD = 0.3;
 
 const EDGE_THRESHOLD_SCALE = 0.65;
 
-const BLUE_LABEL_COMBINED_PASS_THRESHOLD = 0.55;
-const LABEL_FALLBACK_MIN_SCORE = 0.78;
-const LABEL_FALLBACK_PASS_THRESHOLD = 0.6;
-const EDGE_FALLBACK_PASS_THRESHOLD = 0.62;
+const BLUE_LABEL_COMBINED_PASS_THRESHOLD = 0.48;
+const MIN_TICKET_SCORE_PASS = 0.22;
+const MIN_LABEL_SCORE_PASS = 0.26;
+const LABEL_FALLBACK_MIN_SCORE = 0.68;
+const LABEL_FALLBACK_PASS_THRESHOLD = 0.5;
+const EDGE_FALLBACK_PASS_THRESHOLD = 0.55;
 
-const MIN_BLUE_SUPPORT_RATIO = 0.08;
+const MIN_BLUE_SUPPORT_RATIO = 0.04;
 
 const FALLBACK_TICKET_WIDTH_MULTIPLIER = 1.95;
 const FALLBACK_TICKET_HEIGHT_MULTIPLIER = 2.55;
@@ -486,7 +489,7 @@ const scoreTicketCandidate = (
   let edgeHits = 0;
 
   for (const index of component.pixels) {
-    if (masks.blueCoreMask[index] === 1) {
+    if (masks.blueMask[index] === 1) {
       blueHits += 1;
     }
     if (masks.skinMask[index] === 1) {
@@ -676,14 +679,6 @@ const pickBestTicketCandidate = (masks: StageMasks, width: number, height: numbe
   return best;
 };
 
-const buildComponentMask = (component: ConnectedComponent, length: number): Uint8Array => {
-  const componentMask = new Uint8Array(length);
-  for (const index of component.pixels) {
-    componentMask[index] = 1;
-  }
-  return componentMask;
-};
-
 const pickBestLabelCandidate = (
   masks: StageMasks,
   buffers: PixelBuffers,
@@ -695,8 +690,20 @@ const pickBestLabelCandidate = (
   let searchMask: Uint8Array | null = null;
 
   if (ticketCandidate) {
-    searchMask = buildComponentMask(ticketCandidate.component, length);
-    searchMask = dilate3x3(dilate3x3(searchMask, width, height), width, height);
+    const ticketBox = componentToBox(ticketCandidate.component);
+    const marginX = Math.max(4, Math.round(ticketBox.width * 0.08));
+    const marginY = Math.max(4, Math.round(ticketBox.height * 0.08));
+    const minX = clamp(ticketBox.x - marginX, 0, width - 1);
+    const minY = clamp(ticketBox.y - marginY, 0, height - 1);
+    const maxX = clamp(ticketBox.x + ticketBox.width + marginX, minX + 1, width);
+    const maxY = clamp(ticketBox.y + ticketBox.height + marginY, minY + 1, height);
+
+    searchMask = new Uint8Array(length);
+    for (let y = minY; y < maxY; y += 1) {
+      for (let x = minX; x < maxX; x += 1) {
+        searchMask[y * width + x] = 1;
+      }
+    }
   }
 
   const filteredLabelMask = new Uint8Array(length);
@@ -759,7 +766,23 @@ export const localizeTicketFromVideoFrame = (
       confidence: 0,
       box: null,
       ticketBox: null,
-      labelBox: null
+      labelBox: null,
+      debug: options.debug
+        ? {
+            stage: "blue-then-label",
+            reasons: ["NO_WORK_CONTEXT"],
+            ticketScore: 0,
+            labelScore: 0,
+            edgeScore: 0,
+            blueRatio: 0,
+            labelRatio: 0,
+            skinRatio: 0,
+            edgeRatio: 0,
+            fallbackUsed: false,
+            confidenceBeforeCaps: 0,
+            confidenceAfterCaps: 0
+          }
+        : undefined
     };
   }
 
@@ -772,7 +795,23 @@ export const localizeTicketFromVideoFrame = (
       confidence: 0,
       box: null,
       ticketBox: null,
-      labelBox: null
+      labelBox: null,
+      debug: options.debug
+        ? {
+            stage: "blue-then-label",
+            reasons: ["VIDEO_DIMENSIONS_UNAVAILABLE"],
+            ticketScore: 0,
+            labelScore: 0,
+            edgeScore: 0,
+            blueRatio: 0,
+            labelRatio: 0,
+            skinRatio: 0,
+            edgeRatio: 0,
+            fallbackUsed: false,
+            confidenceBeforeCaps: 0,
+            confidenceAfterCaps: 0
+          }
+        : undefined
     };
   }
 
@@ -794,6 +833,7 @@ export const localizeTicketFromVideoFrame = (
   const minBlueSupportRatio = options.minBlueSupportRatio ?? MIN_BLUE_SUPPORT_RATIO;
 
   let stage: TicketLocalizationDebug["stage"] = "blue-then-label";
+  const reasons: string[] = [];
   let fallbackUsed = false;
 
   let ticketBoxScaled: TicketBoundingBox | null = ticketCandidate ? componentToBox(ticketCandidate.component) : null;
@@ -813,6 +853,13 @@ export const localizeTicketFromVideoFrame = (
   let confidenceBeforeCaps = 0;
   let confidence = 0;
 
+  if (!ticketCandidate) {
+    reasons.push("NO_BLUE_TICKET_CANDIDATE");
+  }
+  if (!labelCandidate) {
+    reasons.push("NO_WHITE_LABEL_CANDIDATE");
+  }
+
   if (ticketCandidate && labelCandidate) {
     confidenceBeforeCaps = clamp(ticketScore * 0.6 + labelScore * 0.4, 0, 1);
     confidence = confidenceBeforeCaps;
@@ -820,15 +867,18 @@ export const localizeTicketFromVideoFrame = (
     if (blueRatio < minBlueSupportRatio) {
       const blueFactor = clamp(blueRatio / Math.max(minBlueSupportRatio, 0.01), 0, 1);
       confidence = Math.min(confidence, 0.52 * blueFactor + 0.05);
+      reasons.push("LOW_BLUE_RATIO");
     }
 
     if (skinRatio > SKIN_HEAVY_RATIO_THRESHOLD) {
       const skinFactor = clamp(1 - (skinRatio - SKIN_HEAVY_RATIO_THRESHOLD) * 1.6, 0.15, 1);
       confidence *= skinFactor;
+      reasons.push("SKIN_OCCLUSION_HEAVY");
     }
 
     if (ticketCandidate.aspect < TICKET_ASPECT_MIN || ticketCandidate.aspect > TICKET_ASPECT_MAX) {
       confidence *= 0.7;
+      reasons.push("TICKET_ASPECT_OUT_OF_RANGE");
     }
 
     confidence = clamp(confidence, 0, 1);
@@ -838,8 +888,18 @@ export const localizeTicketFromVideoFrame = (
     ticketBoxScaled !== null &&
     labelBoxScaled !== null &&
     confidence >= BLUE_LABEL_COMBINED_PASS_THRESHOLD &&
-    ticketScore >= 0.35 &&
-    labelScore >= 0.4;
+    ticketScore >= MIN_TICKET_SCORE_PASS &&
+    labelScore >= MIN_LABEL_SCORE_PASS;
+
+  if (ticketCandidate && ticketScore < MIN_TICKET_SCORE_PASS) {
+    reasons.push("LOW_TICKET_SCORE");
+  }
+  if (labelCandidate && labelScore < MIN_LABEL_SCORE_PASS) {
+    reasons.push("LOW_LABEL_SCORE");
+  }
+  if (ticketCandidate && labelCandidate && confidence < BLUE_LABEL_COMBINED_PASS_THRESHOLD) {
+    reasons.push("LOW_COMBINED_CONFIDENCE");
+  }
 
   if (!found && labelCandidate && labelScore >= LABEL_FALLBACK_MIN_SCORE) {
     stage = "label-fallback";
@@ -850,16 +910,21 @@ export const localizeTicketFromVideoFrame = (
     confidenceBeforeCaps = clamp(0.5 + labelScore * 0.2 + labelCandidate.adjacencyRatio * 0.2, 0, 1);
     confidence = clamp(Math.min(0.62, confidenceBeforeCaps), 0, 1);
     found = confidence >= LABEL_FALLBACK_PASS_THRESHOLD;
+    if (!found) {
+      reasons.push("LABEL_FALLBACK_CONFIDENCE_LOW");
+    }
 
     ticketScore = Math.max(ticketScore, 0.25);
     blueRatio = ticketCandidate?.blueRatio ?? 0;
     skinRatio = ticketCandidate?.skinRatio ?? 0;
     edgeRatio = ticketCandidate?.edgeRatio ?? 0;
+  } else if (!found && labelCandidate && labelScore < LABEL_FALLBACK_MIN_SCORE) {
+    reasons.push("LABEL_FALLBACK_SCORE_LOW");
   }
 
   if (!found) {
     const edgeCandidate = pickBestEdgeCandidate(masks, targetWidth, targetHeight);
-    if (edgeCandidate && labelCandidate) {
+    if (edgeCandidate && labelCandidate && labelScore >= MIN_LABEL_SCORE_PASS) {
       stage = "edge-fallback";
       fallbackUsed = true;
       ticketBoxScaled = componentToBox(edgeCandidate.component);
@@ -871,6 +936,11 @@ export const localizeTicketFromVideoFrame = (
       confidenceBeforeCaps = clamp(edgeScore * 0.55 + labelScore * 0.45, 0, 1);
       confidence = clamp(confidenceBeforeCaps * 0.78, 0, 1);
       found = confidence >= EDGE_FALLBACK_PASS_THRESHOLD;
+      if (!found) {
+        reasons.push("EDGE_FALLBACK_CONFIDENCE_LOW");
+      }
+    } else if (!edgeCandidate) {
+      reasons.push("NO_EDGE_FALLBACK_CANDIDATE");
     }
   }
 
@@ -884,6 +954,7 @@ export const localizeTicketFromVideoFrame = (
       debug: options.debug
         ? {
             stage,
+            reasons,
             ticketScore,
             labelScore,
             edgeScore,
@@ -912,6 +983,7 @@ export const localizeTicketFromVideoFrame = (
     debug: options.debug
       ? {
           stage,
+          reasons,
           ticketScore,
           labelScore,
           edgeScore,

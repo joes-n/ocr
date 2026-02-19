@@ -3,7 +3,6 @@ import { appConfig } from "./config";
 import { ScanController } from "./scan-controller";
 import { localizeTicketFromVideoFrame } from "./ticket-localizer";
 import { normalizeTicketOrientationFromVideoFrame } from "./ticket-normalizer";
-import { extractTicketFieldROIs } from "./ticket-roi";
 import type { AudioResolution, OCRResult } from "./types";
 
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -16,7 +15,6 @@ const isChrome = /Chrome/.test(navigator.userAgent) && !/Edg|OPR/.test(navigator
 const hasCameraApi = Boolean(navigator.mediaDevices?.getUserMedia);
 const scanController = new ScanController("Ready");
 const frameSampleIntervalMs = appConfig.retryIntervalMs;
-const ROI_PREVIEW_UPDATE_INTERVAL = 2;
 
 const latestOCRResult: OCRResult | null = null;
 let preferredFacingMode: "user" | "environment" = "environment";
@@ -59,16 +57,6 @@ app.innerHTML = `
         <div id="ticket-overlay" class="ticket-overlay hidden"></div>
         <div id="label-overlay" class="label-overlay hidden"></div>
       </div>
-      <div class="roi-debug-panel">
-        <div class="roi-debug-card">
-          <p id="name-roi-label"><strong>Name ROI:</strong> waiting</p>
-          <canvas id="name-roi-preview" class="roi-preview-canvas" width="1" height="1"></canvas>
-        </div>
-        <div class="roi-debug-card">
-          <p id="seat-roi-label"><strong>Seat ROI:</strong> waiting</p>
-          <canvas id="seat-roi-preview" class="roi-preview-canvas" width="1" height="1"></canvas>
-        </div>
-      </div>
       <div class="actions">
         <button id="start-camera-btn" type="button">Enable Camera</button>
         <button id="stop-camera-btn" type="button" disabled>Stop Camera</button>
@@ -83,10 +71,6 @@ const sampleStatusElement = document.querySelector<HTMLParagraphElement>("#sampl
 const previewElement = document.querySelector<HTMLVideoElement>("#camera-preview");
 const ticketOverlayElement = document.querySelector<HTMLDivElement>("#ticket-overlay");
 const labelOverlayElement = document.querySelector<HTMLDivElement>("#label-overlay");
-const nameRoiLabelElement = document.querySelector<HTMLParagraphElement>("#name-roi-label");
-const seatRoiLabelElement = document.querySelector<HTMLParagraphElement>("#seat-roi-label");
-const nameRoiPreviewElement = document.querySelector<HTMLCanvasElement>("#name-roi-preview");
-const seatRoiPreviewElement = document.querySelector<HTMLCanvasElement>("#seat-roi-preview");
 const cameraSelectElement = document.querySelector<HTMLSelectElement>("#camera-select");
 const switchFacingButton = document.querySelector<HTMLButtonElement>("#switch-facing-btn");
 const startCameraButton = document.querySelector<HTMLButtonElement>("#start-camera-btn");
@@ -99,10 +83,6 @@ if (
   !previewElement ||
   !ticketOverlayElement ||
   !labelOverlayElement ||
-  !nameRoiLabelElement ||
-  !seatRoiLabelElement ||
-  !nameRoiPreviewElement ||
-  !seatRoiPreviewElement ||
   !cameraSelectElement ||
   !switchFacingButton ||
   !startCameraButton ||
@@ -115,55 +95,8 @@ let cameraStream: MediaStream | null = null;
 let samplingTimerId: number | null = null;
 let sampleCount = 0;
 let normalizedFrameCount = 0;
-let roiExtractedFrameCount = 0;
 const sampleCanvas = document.createElement("canvas");
 const sampleContext = sampleCanvas.getContext("2d");
-const nameRoiPreviewContext = nameRoiPreviewElement.getContext("2d");
-const seatRoiPreviewContext = seatRoiPreviewElement.getContext("2d");
-
-const clearRoiPreview = (
-  canvas: HTMLCanvasElement,
-  context: CanvasRenderingContext2D | null,
-  labelElement: HTMLParagraphElement,
-  label: string
-): void => {
-  canvas.width = 1;
-  canvas.height = 1;
-  if (context) {
-    context.clearRect(0, 0, 1, 1);
-  }
-  labelElement.innerHTML = `<strong>${label} ROI:</strong> waiting`;
-};
-
-const renderRoiPreview = (
-  source: HTMLCanvasElement,
-  targetCanvas: HTMLCanvasElement,
-  targetContext: CanvasRenderingContext2D | null,
-  labelElement: HTMLParagraphElement,
-  label: string,
-  detail = ""
-): void => {
-  if (!targetContext || source.width <= 0 || source.height <= 0) {
-    return;
-  }
-
-  if (targetCanvas.width !== source.width) {
-    targetCanvas.width = source.width;
-  }
-  if (targetCanvas.height !== source.height) {
-    targetCanvas.height = source.height;
-  }
-
-  targetContext.clearRect(0, 0, targetCanvas.width, targetCanvas.height);
-  targetContext.drawImage(source, 0, 0);
-  const suffix = detail ? `, ${detail}` : "";
-  labelElement.innerHTML = `<strong>${label} ROI:</strong> ${source.width}x${source.height}${suffix}`;
-};
-
-const clearRoiPreviews = (): void => {
-  clearRoiPreview(nameRoiPreviewElement, nameRoiPreviewContext, nameRoiLabelElement, "Name");
-  clearRoiPreview(seatRoiPreviewElement, seatRoiPreviewContext, seatRoiLabelElement, "Seat");
-};
 
 const inferFacingModeFromLabel = (label: string): "user" | "environment" | null => {
   const lowerLabel = label.toLowerCase();
@@ -303,8 +236,6 @@ const stopSampling = (): void => {
 
   sampleCount = 0;
   normalizedFrameCount = 0;
-  roiExtractedFrameCount = 0;
-  clearRoiPreviews();
   setSampleStatus("idle");
 };
 
@@ -329,7 +260,7 @@ const sampleFrame = (): void => {
   }
 
   sampleContext.drawImage(previewElement, 0, 0, width, height);
-  const localization = localizeTicketFromVideoFrame(previewElement);
+  const localization = localizeTicketFromVideoFrame(previewElement, { debug: true });
   renderTicketOverlays(localization, width, height);
 
   let pipelineDetails = "";
@@ -338,46 +269,22 @@ const sampleFrame = (): void => {
     if (normalizedTicket.success && normalizedTicket.canvas) {
       normalizedFrameCount += 1;
       pipelineDetails = `, normalized ${normalizedFrameCount}, ticket roi ${normalizedTicket.canvas.width}x${normalizedTicket.canvas.height}, rotation ${normalizedTicket.appliedRotationDegrees.toFixed(1)}deg, method ${normalizedTicket.method}, warp ${normalizedTicket.warpConfidence.toFixed(2)}`;
-
-      const fieldRois = extractTicketFieldROIs(normalizedTicket.canvas);
-      if (fieldRois.success) {
-        roiExtractedFrameCount += 1;
-        pipelineDetails += `, field rois ${roiExtractedFrameCount}, name ${fieldRois.fields.name.region.width}x${fieldRois.fields.name.region.height}, seat ${fieldRois.fields.seat.region.width}x${fieldRois.fields.seat.region.height}`;
-        const shouldUpdateRoiPreview = roiExtractedFrameCount % ROI_PREVIEW_UPDATE_INTERVAL === 0;
-        if (shouldUpdateRoiPreview) {
-          const roiDetail = normalizedTicket.method === "rotation-fallback" ? "fallback" : "perspective";
-          renderRoiPreview(
-            fieldRois.fields.name.canvas,
-            nameRoiPreviewElement,
-            nameRoiPreviewContext,
-            nameRoiLabelElement,
-            "Name",
-            roiDetail
-          );
-          renderRoiPreview(
-            fieldRois.fields.seat.canvas,
-            seatRoiPreviewElement,
-            seatRoiPreviewContext,
-            seatRoiLabelElement,
-            "Seat",
-            roiDetail
-          );
-        }
-      } else {
-        clearRoiPreviews();
-      }
-    } else {
-      clearRoiPreviews();
     }
-  } else {
-    clearRoiPreviews();
   }
+
+  const debugDetails = localization.debug
+    ? `, stage ${localization.debug.stage}, ticket ${localization.debug.ticketScore.toFixed(2)}, label ${localization.debug.labelScore.toFixed(2)}`
+    : "";
+  const missReasons =
+    localization.debug && localization.debug.reasons.length > 0
+      ? `, reasons ${localization.debug.reasons.slice(0, 4).join("|")}`
+      : "";
 
   sampleCount += 1;
   setSampleStatus(
     localization.found
-      ? `running (${sampleCount} samples, ticket confidence ${localization.confidence.toFixed(2)}${pipelineDetails})`
-      : `running (${sampleCount} samples, searching ticket)`
+      ? `running (${sampleCount} samples, ticket confidence ${localization.confidence.toFixed(2)}${debugDetails}${pipelineDetails})`
+      : `running (${sampleCount} samples, searching ticket${debugDetails}${missReasons})`
   );
 };
 
