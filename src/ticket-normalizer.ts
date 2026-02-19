@@ -1,4 +1,4 @@
-import type { TicketBoundingBox, TicketLocalizationResult } from "./ticket_localizer_2";
+import type { TicketBoundingBox, TicketLocalizationResult } from "./ticket_localizer_1";
 
 export type Point2D = {
   x: number;

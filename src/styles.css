@@ -88,8 +88,17 @@ p {
   flex-wrap: wrap;
 }
 
-#camera-select,
-#localizer-select {
+.slider-controls {
+  display: grid;
+  gap: 0.4rem;
+  max-width: 640px;
+}
+
+#min-whiteness-slider {
+  width: 100%;
+}
+
+#camera-select {
   min-width: 12rem;
   max-width: 100%;
   padding: 0.45rem 0.6rem;

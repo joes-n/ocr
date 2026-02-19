@@ -2,13 +2,10 @@ import "./styles.css";
 import { appConfig } from "./config";
 import { ScanController } from "./scan-controller";
 import {
-  localizeTicketFromVideoFrame as localizeTicketFromVideoFrameV1,
-  type TicketLocalizationResult as TicketLocalizationResultV1
+  localizeTicketFromVideoFrame,
+  type TicketLocalizationResult,
+  type TicketLocalizationOptions
 } from "./ticket_localizer_1";
-import {
-  localizeTicketFromVideoFrame as localizeTicketFromVideoFrameV2,
-  type TicketLocalizationResult
-} from "./ticket_localizer_2";
 import { normalizeLabelFromVideoFrame, normalizeTicketOrientationFromVideoFrame } from "./ticket-normalizer";
 import type { AudioResolution, OCRResult } from "./types";
 
@@ -23,10 +20,25 @@ const hasCameraApi = Boolean(navigator.mediaDevices?.getUserMedia);
 const scanController = new ScanController("Ready");
 const frameSampleIntervalMs = appConfig.retryIntervalMs;
 
+const MIN_WHITENESS_SLIDER_MIN = 0.2;
+const MIN_WHITENESS_SLIDER_MAX = 0.7;
+const MIN_WHITENESS_SLIDER_STEP = 0.01;
+const DEFAULT_MIN_WHITENESS = 0.46;
+const MIN_AREA_RATIO_SLIDER_MIN = 0.0005;
+const MIN_AREA_RATIO_SLIDER_MAX = 0.2;
+const MIN_AREA_RATIO_SLIDER_STEP = 0.0001;
+const DEFAULT_MIN_AREA_RATIO = 0.0012;
+const MAX_AREA_RATIO_SLIDER_MIN = 0.1;
+const MAX_AREA_RATIO_SLIDER_MAX = 0.99;
+const MAX_AREA_RATIO_SLIDER_STEP = 0.01;
+const DEFAULT_MAX_AREA_RATIO = 0.95;
+
 const latestOCRResult: OCRResult | null = null;
 let preferredFacingMode: "user" | "environment" = "environment";
 let selectedCameraId: string | null = null;
-let activeLocalizer: "localizer1" | "localizer2" = "localizer2";
+let localizerMinWhiteness = DEFAULT_MIN_WHITENESS;
+let localizerMinAreaRatio = DEFAULT_MIN_AREA_RATIO;
+let localizerMaxAreaRatio = DEFAULT_MAX_AREA_RATIO;
 
 const plannedAudioOutput: AudioResolution = {
   playbackRate: appConfig.audioPlaybackRate,
@@ -58,12 +70,36 @@ app.innerHTML = `
         <select id="camera-select" disabled>
           <option value="">Default rear camera</option>
         </select>
-        <label for="localizer-select"><strong>Localizer:</strong></label>
-        <select id="localizer-select">
-          <option value="localizer2">ticket_localizer_2</option>
-          <option value="localizer1">ticket_localizer_1</option>
-        </select>
         <button id="switch-facing-btn" type="button" disabled>Switch to Front Camera</button>
+      </div>
+      <div class="slider-controls">
+        <label for="min-whiteness-slider"><strong>Localizer minWhiteness:</strong> <span id="min-whiteness-value">${localizerMinWhiteness.toFixed(2)}</span></label>
+        <input
+          id="min-whiteness-slider"
+          type="range"
+          min="${MIN_WHITENESS_SLIDER_MIN}"
+          max="${MIN_WHITENESS_SLIDER_MAX}"
+          step="${MIN_WHITENESS_SLIDER_STEP}"
+          value="${localizerMinWhiteness}"
+        />
+        <label for="min-area-ratio-slider"><strong>Localizer minAreaRatio:</strong> <span id="min-area-ratio-value">${localizerMinAreaRatio.toFixed(4)}</span></label>
+        <input
+          id="min-area-ratio-slider"
+          type="range"
+          min="${MIN_AREA_RATIO_SLIDER_MIN}"
+          max="${MIN_AREA_RATIO_SLIDER_MAX}"
+          step="${MIN_AREA_RATIO_SLIDER_STEP}"
+          value="${localizerMinAreaRatio}"
+        />
+        <label for="max-area-ratio-slider"><strong>Localizer maxAreaRatio:</strong> <span id="max-area-ratio-value">${localizerMaxAreaRatio.toFixed(2)}</span></label>
+        <input
+          id="max-area-ratio-slider"
+          type="range"
+          min="${MAX_AREA_RATIO_SLIDER_MIN}"
+          max="${MAX_AREA_RATIO_SLIDER_MAX}"
+          step="${MAX_AREA_RATIO_SLIDER_STEP}"
+          value="${localizerMaxAreaRatio}"
+        />
       </div>
       <div class="preview-frame">
         <video id="camera-preview" autoplay muted playsinline></video>
@@ -85,8 +121,13 @@ const previewElement = document.querySelector<HTMLVideoElement>("#camera-preview
 const ticketOverlayElement = document.querySelector<HTMLDivElement>("#ticket-overlay");
 const labelOverlayElement = document.querySelector<HTMLDivElement>("#label-overlay");
 const cameraSelectElement = document.querySelector<HTMLSelectElement>("#camera-select");
-const localizerSelectElement = document.querySelector<HTMLSelectElement>("#localizer-select");
 const switchFacingButton = document.querySelector<HTMLButtonElement>("#switch-facing-btn");
+const minWhitenessSliderElement = document.querySelector<HTMLInputElement>("#min-whiteness-slider");
+const minWhitenessValueElement = document.querySelector<HTMLSpanElement>("#min-whiteness-value");
+const minAreaRatioSliderElement = document.querySelector<HTMLInputElement>("#min-area-ratio-slider");
+const minAreaRatioValueElement = document.querySelector<HTMLSpanElement>("#min-area-ratio-value");
+const maxAreaRatioSliderElement = document.querySelector<HTMLInputElement>("#max-area-ratio-slider");
+const maxAreaRatioValueElement = document.querySelector<HTMLSpanElement>("#max-area-ratio-value");
 const startCameraButton = document.querySelector<HTMLButtonElement>("#start-camera-btn");
 const stopCameraButton = document.querySelector<HTMLButtonElement>("#stop-camera-btn");
 
@@ -98,8 +139,13 @@ if (
   !ticketOverlayElement ||
   !labelOverlayElement ||
   !cameraSelectElement ||
-  !localizerSelectElement ||
   !switchFacingButton ||
+  !minWhitenessSliderElement ||
+  !minWhitenessValueElement ||
+  !minAreaRatioSliderElement ||
+  !minAreaRatioValueElement ||
+  !maxAreaRatioSliderElement ||
+  !maxAreaRatioValueElement ||
   !startCameraButton ||
   !stopCameraButton
 ) {
@@ -113,54 +159,31 @@ let normalizedFrameCount = 0;
 const sampleCanvas = document.createElement("canvas");
 const sampleContext = sampleCanvas.getContext("2d");
 
-const getActiveLocalizerLabel = (): string =>
-  activeLocalizer === "localizer1" ? "ticket_localizer_1" : "ticket_localizer_2";
+const getActiveLocalizerLabel = (): string => "ticket_localizer_1";
 
-const adaptLocalizerV1Result = (
-  result: TicketLocalizationResultV1,
-  frameWidth: number,
-  frameHeight: number
-): TicketLocalizationResult => {
-  const fallbackBox = {
-    x: 0,
-    y: 0,
-    width: Math.max(1, frameWidth),
-    height: Math.max(1, frameHeight)
-  };
-  const box = result.box ?? result.labelBox ?? result.ticketBox ?? fallbackBox;
+const getLocalizerOptions = (): TicketLocalizationOptions => ({
+  debug: true,
+  minWhiteness: localizerMinWhiteness,
+  minAreaRatio: localizerMinAreaRatio,
+  maxAreaRatio: localizerMaxAreaRatio
+});
 
-  return {
-    ticketFound: result.ticketFound,
-    labelFound: result.labelFound,
-    ticketBox: result.ticketBox,
-    labelBox: result.labelBox,
-    box,
-    confidence: result.confidence,
-    debug: result.debug
-      ? {
-          stage: result.debug.stage,
-          ticketScore: result.debug.ticketScore,
-          labelScore: result.debug.labelScore,
-          frameLighting: result.debug.frameLighting,
-          reasons: result.debug.reasons
-        }
-      : undefined
-  };
+const getTuningSummary = (): string =>
+  `minWhiteness ${localizerMinWhiteness.toFixed(2)}, minAreaRatio ${localizerMinAreaRatio.toFixed(4)}, maxAreaRatio ${localizerMaxAreaRatio.toFixed(2)}`;
+
+const updateTuningValueLabels = (): void => {
+  minWhitenessValueElement.textContent = localizerMinWhiteness.toFixed(2);
+  minAreaRatioValueElement.textContent = localizerMinAreaRatio.toFixed(4);
+  maxAreaRatioValueElement.textContent = localizerMaxAreaRatio.toFixed(2);
 };
 
-const localizeTicketFromVideoFrame = (
-  sourceVideo: HTMLVideoElement,
-  options: { debug?: boolean } = {}
-): TicketLocalizationResult => {
-  if (activeLocalizer === "localizer1") {
-    return adaptLocalizerV1Result(
-      localizeTicketFromVideoFrameV1(sourceVideo, options),
-      sourceVideo.videoWidth,
-      sourceVideo.videoHeight
-    );
-  }
-
-  return localizeTicketFromVideoFrameV2(sourceVideo, options);
+const updateCameraMessageForTuning = (): void => {
+  const tuningSummary = getTuningSummary();
+  setCameraMessage(
+    cameraStream
+      ? `Camera preview active. Using ${getActiveLocalizerLabel()} (${tuningSummary}).`
+      : `Camera preview not started. ${tuningSummary}.`
+  );
 };
 
 const inferFacingModeFromLabel = (label: string): "user" | "environment" | null => {
@@ -325,7 +348,7 @@ const sampleFrame = (): void => {
   }
 
   sampleContext.drawImage(previewElement, 0, 0, width, height);
-  const localization = localizeTicketFromVideoFrame(previewElement, { debug: true });
+  const localization = localizeTicketFromVideoFrame(previewElement, getLocalizerOptions());
   renderTicketOverlays(localization, width, height);
 
   let pipelineDetails = "";
@@ -354,10 +377,11 @@ const sampleFrame = (): void => {
 
   sampleCount += 1;
   const activeLocalizerLabel = getActiveLocalizerLabel();
+  const tuningDetails = `, ${getTuningSummary()}`;
   setSampleStatus(
     localization.ticketFound
-      ? `running (${sampleCount} samples, localizer ${activeLocalizerLabel}, ticket confidence ${localization.confidence.toFixed(2)}${debugDetails}${pipelineDetails})`
-      : `running (${sampleCount} samples, localizer ${activeLocalizerLabel}, searching ticket${debugDetails}${missReasons})`
+      ? `running (${sampleCount} samples, localizer ${activeLocalizerLabel}${tuningDetails}, ticket confidence ${localization.confidence.toFixed(2)}${debugDetails}${pipelineDetails})`
+      : `running (${sampleCount} samples, localizer ${activeLocalizerLabel}${tuningDetails}, searching ticket${debugDetails}${missReasons})`
   );
 };
 
@@ -428,7 +452,7 @@ const startPreview = async (): Promise<void> => {
     await populateCameraOptions();
 
     scanController.setState("Scanning");
-    setCameraMessage(`Camera preview active. Using ${getActiveLocalizerLabel()}.`);
+    updateCameraMessageForTuning();
     sampleCount = 0;
     startSampling();
     stopCameraButton.disabled = false;
@@ -447,20 +471,15 @@ const startPreview = async (): Promise<void> => {
 
 startCameraButton.disabled = !hasCameraApi || !isChrome;
 updateCameraControlsState(hasCameraApi && isChrome);
-localizerSelectElement.value = activeLocalizer;
+updateTuningValueLabels();
 void populateCameraOptions();
 
 startCameraButton.addEventListener("click", () => {
   void startPreview();
 });
+
 stopCameraButton.addEventListener("click", stopPreview);
-localizerSelectElement.addEventListener("change", () => {
-  activeLocalizer = localizerSelectElement.value === "localizer1" ? "localizer1" : "localizer2";
-  const localizerLabel = getActiveLocalizerLabel();
-  setCameraMessage(
-    cameraStream ? `Camera preview active. Using ${localizerLabel}.` : `Camera preview not started. Selected ${localizerLabel}.`
-  );
-});
+
 cameraSelectElement.addEventListener("change", () => {
   selectedCameraId = cameraSelectElement.value || null;
   if (cameraStream) {
@@ -468,6 +487,7 @@ cameraSelectElement.addEventListener("change", () => {
     void startPreview();
   }
 });
+
 switchFacingButton.addEventListener("click", () => {
   preferredFacingMode = preferredFacingMode === "environment" ? "user" : "environment";
   selectedCameraId = null;
@@ -479,6 +499,49 @@ switchFacingButton.addEventListener("click", () => {
   } else {
     setSwitchFacingLabel();
   }
+});
+
+minWhitenessSliderElement.addEventListener("input", () => {
+  const value = Number(minWhitenessSliderElement.value);
+  if (!Number.isFinite(value)) {
+    return;
+  }
+
+  localizerMinWhiteness = Math.min(MIN_WHITENESS_SLIDER_MAX, Math.max(MIN_WHITENESS_SLIDER_MIN, value));
+  updateTuningValueLabels();
+  updateCameraMessageForTuning();
+});
+
+minAreaRatioSliderElement.addEventListener("input", () => {
+  const value = Number(minAreaRatioSliderElement.value);
+  if (!Number.isFinite(value)) {
+    return;
+  }
+
+  localizerMinAreaRatio = Math.min(MIN_AREA_RATIO_SLIDER_MAX, Math.max(MIN_AREA_RATIO_SLIDER_MIN, value));
+  if (localizerMinAreaRatio >= localizerMaxAreaRatio) {
+    localizerMaxAreaRatio = Math.min(MAX_AREA_RATIO_SLIDER_MAX, localizerMinAreaRatio + MIN_AREA_RATIO_SLIDER_STEP);
+    maxAreaRatioSliderElement.value = localizerMaxAreaRatio.toString();
+  }
+
+  updateTuningValueLabels();
+  updateCameraMessageForTuning();
+});
+
+maxAreaRatioSliderElement.addEventListener("input", () => {
+  const value = Number(maxAreaRatioSliderElement.value);
+  if (!Number.isFinite(value)) {
+    return;
+  }
+
+  localizerMaxAreaRatio = Math.min(MAX_AREA_RATIO_SLIDER_MAX, Math.max(MAX_AREA_RATIO_SLIDER_MIN, value));
+  if (localizerMaxAreaRatio <= localizerMinAreaRatio) {
+    localizerMinAreaRatio = Math.max(MIN_AREA_RATIO_SLIDER_MIN, localizerMaxAreaRatio - MIN_AREA_RATIO_SLIDER_STEP);
+    minAreaRatioSliderElement.value = localizerMinAreaRatio.toString();
+  }
+
+  updateTuningValueLabels();
+  updateCameraMessageForTuning();
 });
 
 navigator.mediaDevices?.addEventListener?.("devicechange", () => {
