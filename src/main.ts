@@ -1,7 +1,14 @@
 import "./styles.css";
 import { appConfig } from "./config";
 import { ScanController } from "./scan-controller";
-import { localizeTicketFromVideoFrame } from "./ticket-localizer";
+import {
+  localizeTicketFromVideoFrame as localizeTicketFromVideoFrameV1,
+  type TicketLocalizationResult as TicketLocalizationResultV1
+} from "./ticket_localizer_1";
+import {
+  localizeTicketFromVideoFrame as localizeTicketFromVideoFrameV2,
+  type TicketLocalizationResult
+} from "./ticket_localizer_2";
 import { normalizeLabelFromVideoFrame, normalizeTicketOrientationFromVideoFrame } from "./ticket-normalizer";
 import type { AudioResolution, OCRResult } from "./types";
 
@@ -19,6 +26,7 @@ const frameSampleIntervalMs = appConfig.retryIntervalMs;
 const latestOCRResult: OCRResult | null = null;
 let preferredFacingMode: "user" | "environment" = "environment";
 let selectedCameraId: string | null = null;
+let activeLocalizer: "localizer1" | "localizer2" = "localizer2";
 
 const plannedAudioOutput: AudioResolution = {
   playbackRate: appConfig.audioPlaybackRate,
@@ -50,6 +58,11 @@ app.innerHTML = `
         <select id="camera-select" disabled>
           <option value="">Default rear camera</option>
         </select>
+        <label for="localizer-select"><strong>Localizer:</strong></label>
+        <select id="localizer-select">
+          <option value="localizer2">ticket_localizer_2</option>
+          <option value="localizer1">ticket_localizer_1</option>
+        </select>
         <button id="switch-facing-btn" type="button" disabled>Switch to Front Camera</button>
       </div>
       <div class="preview-frame">
@@ -72,6 +85,7 @@ const previewElement = document.querySelector<HTMLVideoElement>("#camera-preview
 const ticketOverlayElement = document.querySelector<HTMLDivElement>("#ticket-overlay");
 const labelOverlayElement = document.querySelector<HTMLDivElement>("#label-overlay");
 const cameraSelectElement = document.querySelector<HTMLSelectElement>("#camera-select");
+const localizerSelectElement = document.querySelector<HTMLSelectElement>("#localizer-select");
 const switchFacingButton = document.querySelector<HTMLButtonElement>("#switch-facing-btn");
 const startCameraButton = document.querySelector<HTMLButtonElement>("#start-camera-btn");
 const stopCameraButton = document.querySelector<HTMLButtonElement>("#stop-camera-btn");
@@ -84,6 +98,7 @@ if (
   !ticketOverlayElement ||
   !labelOverlayElement ||
   !cameraSelectElement ||
+  !localizerSelectElement ||
   !switchFacingButton ||
   !startCameraButton ||
   !stopCameraButton
@@ -97,6 +112,56 @@ let sampleCount = 0;
 let normalizedFrameCount = 0;
 const sampleCanvas = document.createElement("canvas");
 const sampleContext = sampleCanvas.getContext("2d");
+
+const getActiveLocalizerLabel = (): string =>
+  activeLocalizer === "localizer1" ? "ticket_localizer_1" : "ticket_localizer_2";
+
+const adaptLocalizerV1Result = (
+  result: TicketLocalizationResultV1,
+  frameWidth: number,
+  frameHeight: number
+): TicketLocalizationResult => {
+  const fallbackBox = {
+    x: 0,
+    y: 0,
+    width: Math.max(1, frameWidth),
+    height: Math.max(1, frameHeight)
+  };
+  const box = result.box ?? result.labelBox ?? result.ticketBox ?? fallbackBox;
+
+  return {
+    ticketFound: result.ticketFound,
+    labelFound: result.labelFound,
+    ticketBox: result.ticketBox,
+    labelBox: result.labelBox,
+    box,
+    confidence: result.confidence,
+    debug: result.debug
+      ? {
+          stage: result.debug.stage,
+          ticketScore: result.debug.ticketScore,
+          labelScore: result.debug.labelScore,
+          frameLighting: result.debug.frameLighting,
+          reasons: result.debug.reasons
+        }
+      : undefined
+  };
+};
+
+const localizeTicketFromVideoFrame = (
+  sourceVideo: HTMLVideoElement,
+  options: { debug?: boolean } = {}
+): TicketLocalizationResult => {
+  if (activeLocalizer === "localizer1") {
+    return adaptLocalizerV1Result(
+      localizeTicketFromVideoFrameV1(sourceVideo, options),
+      sourceVideo.videoWidth,
+      sourceVideo.videoHeight
+    );
+  }
+
+  return localizeTicketFromVideoFrameV2(sourceVideo, options);
+};
 
 const inferFacingModeFromLabel = (label: string): "user" | "environment" | null => {
   const lowerLabel = label.toLowerCase();
@@ -213,7 +278,7 @@ const renderOverlay = (
 };
 
 const renderTicketOverlays = (
-  localization: ReturnType<typeof localizeTicketFromVideoFrame>,
+  localization: TicketLocalizationResult,
   frameWidth: number,
   frameHeight: number
 ): void => {
@@ -288,10 +353,11 @@ const sampleFrame = (): void => {
       : "";
 
   sampleCount += 1;
+  const activeLocalizerLabel = getActiveLocalizerLabel();
   setSampleStatus(
     localization.ticketFound
-      ? `running (${sampleCount} samples, ticket confidence ${localization.confidence.toFixed(2)}${debugDetails}${pipelineDetails})`
-      : `running (${sampleCount} samples, searching ticket${debugDetails}${missReasons})`
+      ? `running (${sampleCount} samples, localizer ${activeLocalizerLabel}, ticket confidence ${localization.confidence.toFixed(2)}${debugDetails}${pipelineDetails})`
+      : `running (${sampleCount} samples, localizer ${activeLocalizerLabel}, searching ticket${debugDetails}${missReasons})`
   );
 };
 
@@ -362,7 +428,7 @@ const startPreview = async (): Promise<void> => {
     await populateCameraOptions();
 
     scanController.setState("Scanning");
-    setCameraMessage("Camera preview active.");
+    setCameraMessage(`Camera preview active. Using ${getActiveLocalizerLabel()}.`);
     sampleCount = 0;
     startSampling();
     stopCameraButton.disabled = false;
@@ -381,12 +447,20 @@ const startPreview = async (): Promise<void> => {
 
 startCameraButton.disabled = !hasCameraApi || !isChrome;
 updateCameraControlsState(hasCameraApi && isChrome);
+localizerSelectElement.value = activeLocalizer;
 void populateCameraOptions();
 
 startCameraButton.addEventListener("click", () => {
   void startPreview();
 });
 stopCameraButton.addEventListener("click", stopPreview);
+localizerSelectElement.addEventListener("change", () => {
+  activeLocalizer = localizerSelectElement.value === "localizer1" ? "localizer1" : "localizer2";
+  const localizerLabel = getActiveLocalizerLabel();
+  setCameraMessage(
+    cameraStream ? `Camera preview active. Using ${localizerLabel}.` : `Camera preview not started. Selected ${localizerLabel}.`
+  );
+});
 cameraSelectElement.addEventListener("change", () => {
   selectedCameraId = cameraSelectElement.value || null;
   if (cameraStream) {

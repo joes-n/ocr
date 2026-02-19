@@ -88,7 +88,8 @@ p {
   flex-wrap: wrap;
 }
 
-#camera-select {
+#camera-select,
+#localizer-select {
   min-width: 12rem;
   max-width: 100%;
   padding: 0.45rem 0.6rem;

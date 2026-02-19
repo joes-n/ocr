@@ -19,7 +19,7 @@ Source spec: `SOFTWARE_SPEC.md`
   Trace: Spec §5 FR-1, §11
 
 ## 2. Ticket Detection and Orientation
-- [x] `T-020` Implement known-template ticket localization in frame.  
+- [ ] `T-020` Implement known-template ticket localization in frame.  
   Trace: Spec §5 FR-2
 - [ ] `T-021` Implement rotation/orientation normalization to canonical ticket view.  
   Trace: Spec §4.1, §5 FR-2, §9
