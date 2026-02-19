@@ -1,40 +1,40 @@
 # OCR Ticket Reader Web App - Software Specification (MVP)
 
 ## 1. Document Control
-- Version: 1.0
-- Date: 2026-02-14
-- Status: Draft for implementation
+- Version: 1.1
+- Date: 2026-02-20
+- Status: Active implementation spec
 - Product Name: OCR Ticket Reader Web App
 
 ## 2. Purpose and Goals
 Build a browser-based application for laptop use that:
 - Reads a ticket through webcam input.
-- Extracts the ticket holder's full name and seat number.
+- Uses a self-hosted PaddleOCR backend to recognize text from captured frames.
+- Parses OCR text to extract the ticket holder full name and seat number.
 - Displays name and seat number on screen.
 - Reads name and seat number aloud.
 
 Primary success goal:
-- End-to-end processing time from ticket placement to spoken output is under 1 second in ideal conditions.
+- End-to-end processing time from stable ticket placement to spoken output is under 1 second in ideal conditions.
 
 ## 3. Users and Operating Context
 - Primary users: Ticket holders.
 - Usage context: Ticket presented to laptop webcam.
-- Input orientation: Ticket may be placed a +45/-45 degrees to horizontal orientation.
+- Input orientation: Ticket may be rotated and partially skewed.
 - Environment assumptions for MVP:
   - HD camera available.
-  - Part of ticket might be under shadow. White label will not be under shadow.
-  - Ticket in focus and within optimal distance.
-  - Known single ticket template.
-  - Part of ticket might be blocked buy user hand. The entire white label is always visible.
-  - The ticket might be wrinkled.
+  - Ticket text area is visible and in focus.
+  - Good-enough lighting for OCR.
+  - Single ticket shown at a time.
 
 ## 4. Scope
 ### 4.1 In Scope (MVP)
-- Real-time webcam capture in browser (Chrome only).
-- Detection and OCR of ticket holder full name (Chinese or English).
-- Detection and OCR of seat number pattern.
-- Seat number format validation: `NNLLNN` (2 digits + 2 letters + 2 digits), example `10AC13`.
-- Handling ticket rotation for OCR success.
+- Real-time webcam capture in browser (Chrome desktop target).
+- Frame submission to a local/self-hosted OCR backend (`POST /ocr`).
+- OCR and extraction of:
+  - Holder full name (Chinese or English).
+  - Seat number matching `NNLLNN` (example `10AC13`).
+- Parser-based field extraction from full-frame OCR results (no fixed ROI dependency).
 - On-screen result display with confidence checks.
 - Audio output:
   - Prefer pre-recorded audio for name and seat.
@@ -44,33 +44,33 @@ Primary success goal:
   - Retry automatically.
 
 ### 4.2 Out of Scope
-- Use of external OCR service providers.
+- External OCR SaaS/API providers.
 - Native mobile apps.
-- Multi-template ticket support.
-- Security/privacy/compliance hardening beyond standard browser/runtime defaults.
+- Multi-template model training.
 - Database-backed persistence.
+- Advanced privacy/compliance hardening beyond MVP defaults.
 
 ## 5. Functional Requirements
 ### FR-1 Webcam Input
 - The app shall request webcam permission in Chrome.
 - The app shall show a live preview.
-- The app shall continuously process frames while scanning is active.
+- The app shall continuously sample frames while scanning is active.
 
-### FR-2 Ticket Localization and Orientation Handling
-- The app shall locate the known ticket template in frame.
-- The app shall normalize orientation for OCR when ticket is rotated.
+### FR-2 OCR Backend Invocation
+- The app shall submit sampled frames to a self-hosted backend OCR endpoint.
+- The backend shall run PaddleOCR locally and return recognized text items with bounding boxes and confidence.
+- The backend endpoint shall be `POST /ocr` with multipart field name `file`.
 
-### FR-3 Field Extraction
-- The app shall extract:
+### FR-3 Field Parsing and Validation
+- The app shall parse backend OCR output to extract:
   - Holder full name (Chinese or English).
-  - Seat number matching `NNLLNN`.
+  - Seat number matching regex `^[0-9]{2}[A-Z]{2}[0-9]{2}$`.
 - The app shall reject seat strings not matching the format.
+- The app shall tolerate OCR noise and choose the best candidate set by parser rules.
 
 ### FR-4 OCR Engine Constraint
 - OCR shall run with no third-party OCR service provider dependency.
-- OCR implementation may be:
-  - Fully local in browser, or
-  - Self-hosted backend OCR service controlled by project owner.
+- OCR engine shall be self-hosted PaddleOCR in project-controlled runtime.
 
 ### FR-5 Output Rendering
 - The app shall display recognized name and seat number.
@@ -83,7 +83,7 @@ Primary success goal:
 - For seat:
   - Use pre-recorded audio if available.
   - Otherwise use TTS fallback.
-- Audio sequence shall read name then seat number.
+- Audio sequence shall read name first, then seat number.
 
 ### FR-7 Low Confidence Flow
 - If confidence is below configured threshold:
@@ -94,16 +94,17 @@ Primary success goal:
 ## 6. Non-Functional Requirements
 ### NFR-1 Performance
 - In ideal conditions, from stable ticket placement to spoken output shall be < 1 second (p95).
-- OCR and post-processing pipeline shall be optimized for low latency over perfect robustness in MVP.
+- OCR + parsing pipeline shall prioritize low latency for MVP.
 
 ### NFR-2 Accuracy
-- Under good lighting and focus with known template, name + seat extraction success rate shall be > 95%.
+- Under good lighting and focus, name + seat extraction success rate shall be > 95%.
 
 ### NFR-3 Platform
 - MVP browser support: Google Chrome (desktop).
+- MVP backend runtime: local/self-hosted Python service.
 
 ### NFR-4 Availability/Security/Privacy
-- No explicit non-functional targets defined for MVP.
+- No explicit production-grade targets defined for MVP.
 
 ## 7. Data and Storage
 ### 7.1 Persistent Data
@@ -111,48 +112,45 @@ Primary success goal:
 
 ### 7.2 Runtime Data
 - Temporary in-memory OCR results and confidence scores.
+- Parsed name/seat candidates and final selected values.
 - Mapping of pre-recorded audio file names:
-  - Name audio file should map to holder name key.
-  - Seat audio file should map to seat key.
+  - Name audio file mapped to holder name key.
+  - Seat audio file mapped to seat key.
 
 ### 7.3 Logging
-- Minimal local diagnostic logs (debug mode only), no mandatory persistence.
+- Minimal local diagnostic logs for backend and frontend.
+- Error logs retained only in process output unless explicit persistence is added.
 
-## 8. High-Level Architecture
-Two acceptable implementation modes:
-
-### Option A: Fully Local
-- Browser camera capture.
-- In-browser template alignment + OCR.
-- In-browser validation + audio selection + playback.
-
-### Option B: Hybrid (Self-Hosted)
-- Browser camera capture.
-- Frame/ROI sent to self-hosted OCR backend.
-- Backend returns parsed name, seat, confidence.
-- Browser handles validation, UI, and audio output.
+## 8. High-Level Architecture (Selected)
+Single architecture mode for MVP:
+1. Browser captures camera frames.
+2. Browser uploads frame to self-hosted backend (`/ocr`).
+3. Backend runs PaddleOCR and returns text lines + confidence + polygons.
+4. Frontend parser derives `name` and `seat` from OCR results.
+5. Frontend validates seat regex and confidence thresholds.
+6. Frontend renders and plays audio (pre-recorded first, TTS fallback).
 
 Constraint:
 - No external OCR SaaS/API provider.
 
 ## 9. Processing Pipeline (Normative)
 1. Start scan and open webcam stream.
-2. Detect ticket template region.
-3. Correct orientation to canonical view.
-4. Extract ROI for name and seat fields.
-5. Run OCR for multilingual name and alphanumeric seat.
-6. Validate seat using regex `^[0-9]{2}[A-Z]{2}[0-9]{2}$`.
-7. Score confidence per field and combined result.
-8. If confidence pass:
+2. Capture frame at configured interval.
+3. Send frame to backend `/ocr`.
+4. Backend runs PaddleOCR and returns OCR items.
+5. Parse OCR items into `name` and `seat` candidates.
+6. Validate seat with regex `^[0-9]{2}[A-Z]{2}[0-9]{2}$`.
+7. Compute per-field and combined confidence.
+8. If confidence passes:
    - Render text.
    - Resolve audio files.
    - Play pre-recorded clips or TTS fallback.
-9. If confidence fail:
+9. If confidence fails:
    - Show reposition prompt.
    - Retry automatically.
 
 ## 10. UX Requirements
-- Clear camera preview with framing guidance.
+- Clear camera preview with concise scan status.
 - Simple states:
   - Ready
   - Scanning
@@ -162,18 +160,19 @@ Constraint:
 - Retry prompt shall be actionable and concise.
 
 ## 11. Configuration Parameters
-- `confidence_threshold_name` (default TBD during implementation)
-- `confidence_threshold_seat` (default TBD during implementation)
-- `scan_timeout_ms` (default TBD)
-- `retry_interval_ms` (default TBD)
-- `audio_playback_rate` (default 1.0)
+- `confidence_threshold_name`
+- `confidence_threshold_seat`
+- `scan_timeout_ms`
+- `retry_interval_ms`
+- `audio_playback_rate`
 - `seat_regex` fixed to `^[0-9]{2}[A-Z]{2}[0-9]{2}$` for MVP
+- `ocr_backend_url` (default `http://127.0.0.1:8000/ocr`)
 
 ## 12. Acceptance Criteria (MVP)
 ### AC-1 Core Recognition
 - Given a valid ticket in good lighting and focus,
-- When user places it under webcam at arbitrary rotation,
-- Then app extracts full name and seat number correctly.
+- When user places it under webcam,
+- Then app extracts full name and seat number correctly from backend OCR output.
 
 ### AC-2 Seat Format Enforcement
 - Given OCR output not matching `NNLLNN`,
@@ -191,16 +190,16 @@ Constraint:
 - Then app shows reposition prompt and retries automatically.
 
 ### AC-5 Performance
-- Given ideal environment and known template,
+- Given ideal environment,
 - Then p95 end-to-end latency is < 1 second.
 
 ### AC-6 Browser Target
-- MVP behavior is validated and supported on desktop Chrome.
+- MVP behavior is validated on desktop Chrome with local backend running.
 
 ## 13. Test Plan Summary
 ### 13.1 Functional Tests
-- Correct extraction on canonical orientation.
-- Correct extraction at multiple rotations.
+- Backend `/ocr` returns text items from uploaded image.
+- Parser extracts correct name/seat from realistic OCR noise.
 - Mixed language names (Chinese and English).
 - Seat validation positive and negative cases.
 - Audio playback path for:
@@ -210,27 +209,27 @@ Constraint:
 
 ### 13.2 Performance Tests
 - Measure p50/p95 latency from stable frame to first audio output.
-- Run on HD webcam in good lighting; minimum sample size defined during implementation planning.
+- Include backend OCR latency in total measurement.
 
 ### 13.3 Accuracy Tests
-- Evaluate recognition success over representative ticket set using single known template.
+- Evaluate extraction success over representative ticket set.
 - Pass criterion: >95% name+seat correctness in ideal conditions.
 
 ## 14. Risks and Mitigations
-- OCR errors for similar characters (e.g., `O/0`, `I/1`)
-  - Mitigation: strict seat format validation and confidence gating.
-- Latency risk on low-end hardware
-  - Mitigation: limit processing resolution and optimize inference path.
-- Chinese name pronunciation quality in TTS fallback
-  - Mitigation: prefer curated pre-recorded names when available.
+- OCR confusion for similar characters (`O/0`, `I/1`, `B/8`)
+  - Mitigation: strict seat regex + parser normalization + confidence gating.
+- Backend latency spikes or process memory pressure on high-resolution frames
+  - Mitigation: resize input before OCR and tune sampling interval.
+- Name extraction ambiguity in noisy OCR output
+  - Mitigation: parser ranking heuristics and fallback retry prompt.
 
 ## 15. Open Implementation Decisions
-- Choose final OCR runtime path: local-only vs hybrid self-hosted.
-- Set final confidence thresholds based on calibration.
-- Define final list and naming convention for pre-recorded audio assets.
-- Finalize measurement method for "ticket placement" start event in latency KPI.
+- Final parser ranking logic for choosing best name candidate.
+- Final confidence aggregation formula across OCR lines.
+- Final list and naming convention for pre-recorded audio assets.
+- Final calibration values for retry interval and confidence thresholds.
 
 ## 16. Definition of Done (MVP)
-- All acceptance criteria in Section 12 pass on Chrome desktop.
-- Accuracy and latency targets are met in the defined ideal test environment.
+- All acceptance criteria in Section 12 pass on Chrome desktop with backend running.
+- Accuracy and latency targets are met in defined ideal test environment.
 - User can complete full flow: place ticket -> see result -> hear result.

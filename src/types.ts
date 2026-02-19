@@ -12,6 +12,12 @@ export type OCRResult = {
   confidence: OCRFieldConfidence;
 };
 
+export type OCRItem = {
+  box: Array<[number, number]>;
+  text: string;
+  confidence: number;
+};
+
 export type AudioSourceType = "preRecorded" | "tts";
 
 export type AudioSegment = {

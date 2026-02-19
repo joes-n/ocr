@@ -20,8 +20,9 @@ body {
   padding: 1.5rem;
 }
 
-h1 {
-  margin: 0 0 0.5rem;
+h1,
+h2 {
+  margin: 0;
 }
 
 p {
@@ -29,6 +30,7 @@ p {
 }
 
 .panel {
+  width: min(100%, 760px);
   background: #ffffff;
   border: 1px solid #e5e7eb;
   border-radius: 0.75rem;
@@ -53,29 +55,6 @@ p {
   height: auto;
 }
 
-.ticket-overlay {
-  position: absolute;
-  border: 2px solid #22c55e;
-  border-radius: 0.25rem;
-  box-shadow: 0 0 0 9999px rgb(34 197 94 / 0.08);
-  pointer-events: none;
-}
-
-.ticket-overlay.hidden {
-  display: none;
-}
-
-.label-overlay {
-  position: absolute;
-  border: 2px solid #f97316;
-  border-radius: 0.25rem;
-  pointer-events: none;
-}
-
-.label-overlay.hidden {
-  display: none;
-}
-
 .actions {
   display: flex;
   gap: 0.5rem;
@@ -88,16 +67,6 @@ p {
   flex-wrap: wrap;
 }
 
-.slider-controls {
-  display: grid;
-  gap: 0.4rem;
-  max-width: 640px;
-}
-
-#min-whiteness-slider {
-  width: 100%;
-}
-
 #camera-select {
   min-width: 12rem;
   max-width: 100%;
@@ -106,6 +75,29 @@ p {
   border: 1px solid #d1d5db;
   background: #ffffff;
   color: #111827;
+}
+
+.result-panel {
+  display: grid;
+  gap: 0.45rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.65rem;
+  padding: 0.75rem;
+  background: #fafafa;
+}
+
+.ocr-raw {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #111827;
+  color: #f9fafb;
+  border-radius: 0.5rem;
+  padding: 0.6rem;
+  font-size: 0.82rem;
+  line-height: 1.35;
 }
 
 button {

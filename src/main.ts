@@ -1,13 +1,7 @@
 import "./styles.css";
 import { appConfig } from "./config";
 import { ScanController } from "./scan-controller";
-import {
-  localizeTicketFromVideoFrame,
-  type TicketLocalizationResult,
-  type TicketLocalizationOptions
-} from "./ticket_localizer_1";
-import { normalizeLabelFromVideoFrame, normalizeTicketOrientationFromVideoFrame } from "./ticket-normalizer";
-import type { AudioResolution, OCRResult } from "./types";
+import type { AudioResolution, OCRItem, OCRResult } from "./types";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 
@@ -20,25 +14,14 @@ const hasCameraApi = Boolean(navigator.mediaDevices?.getUserMedia);
 const scanController = new ScanController("Ready");
 const frameSampleIntervalMs = appConfig.retryIntervalMs;
 
-const MIN_WHITENESS_SLIDER_MIN = 0.2;
-const MIN_WHITENESS_SLIDER_MAX = 0.7;
-const MIN_WHITENESS_SLIDER_STEP = 0.01;
-const DEFAULT_MIN_WHITENESS = 0.46;
-const MIN_AREA_RATIO_SLIDER_MIN = 0.0005;
-const MIN_AREA_RATIO_SLIDER_MAX = 0.2;
-const MIN_AREA_RATIO_SLIDER_STEP = 0.0001;
-const DEFAULT_MIN_AREA_RATIO = 0.0012;
-const MAX_AREA_RATIO_SLIDER_MIN = 0.1;
-const MAX_AREA_RATIO_SLIDER_MAX = 0.99;
-const MAX_AREA_RATIO_SLIDER_STEP = 0.01;
-const DEFAULT_MAX_AREA_RATIO = 0.95;
-
-const latestOCRResult: OCRResult | null = null;
+let latestOCRResult: OCRResult | null = null;
+let latestOCRItems: OCRItem[] = [];
 let preferredFacingMode: "user" | "environment" = "environment";
 let selectedCameraId: string | null = null;
-let localizerMinWhiteness = DEFAULT_MIN_WHITENESS;
-let localizerMinAreaRatio = DEFAULT_MIN_AREA_RATIO;
-let localizerMaxAreaRatio = DEFAULT_MAX_AREA_RATIO;
+let cameraStream: MediaStream | null = null;
+let samplingTimerId: number | null = null;
+let sampleCount = 0;
+let isOCRInFlight = false;
 
 const plannedAudioOutput: AudioResolution = {
   playbackRate: appConfig.audioPlaybackRate,
@@ -49,11 +32,12 @@ app.innerHTML = `
   <main class="shell">
     <header>
       <h1>OCR Ticket Reader</h1>
-      <p>MVP scaffold initialized for desktop Chrome.</p>
+      <p>Webcam frame is sent to PaddleOCR backend, then name/seat are parsed in frontend.</p>
     </header>
     <section class="panel">
       <p><strong>Browser check:</strong> ${isChrome ? "Chrome detected" : "Please use desktop Chrome for MVP."}</p>
       <p><strong>Camera API:</strong> ${hasCameraApi ? "Available" : "Not available"}</p>
+      <p><strong>OCR backend:</strong> <code>${appConfig.ocrBackendUrl}</code></p>
       <p><strong>Name confidence threshold:</strong> ${appConfig.confidenceThresholdName}</p>
       <p><strong>Seat confidence threshold:</strong> ${appConfig.confidenceThresholdSeat}</p>
       <p><strong>Scan timeout (ms):</strong> ${appConfig.scanTimeoutMs}</p>
@@ -61,10 +45,11 @@ app.innerHTML = `
       <p><strong>Frame sample interval (ms):</strong> ${frameSampleIntervalMs}</p>
       <p><strong>Audio playback rate:</strong> ${appConfig.audioPlaybackRate}</p>
       <p id="app-state"><strong>App state:</strong> ${scanController.getState()}</p>
-      <p><strong>Latest OCR result:</strong> ${latestOCRResult ? "Available" : "None"}</p>
+      <p id="ocr-summary"><strong>Latest OCR result:</strong> None</p>
       <p><strong>Queued audio segments:</strong> ${plannedAudioOutput.segments.length}</p>
       <p id="camera-message">Camera preview not started.</p>
       <p id="sample-status"><strong>Sample loop:</strong> idle</p>
+
       <div class="camera-controls">
         <label for="camera-select"><strong>Camera:</strong></label>
         <select id="camera-select" disabled>
@@ -72,40 +57,24 @@ app.innerHTML = `
         </select>
         <button id="switch-facing-btn" type="button" disabled>Switch to Front Camera</button>
       </div>
-      <div class="slider-controls">
-        <label for="min-whiteness-slider"><strong>Localizer minWhiteness:</strong> <span id="min-whiteness-value">${localizerMinWhiteness.toFixed(2)}</span></label>
-        <input
-          id="min-whiteness-slider"
-          type="range"
-          min="${MIN_WHITENESS_SLIDER_MIN}"
-          max="${MIN_WHITENESS_SLIDER_MAX}"
-          step="${MIN_WHITENESS_SLIDER_STEP}"
-          value="${localizerMinWhiteness}"
-        />
-        <label for="min-area-ratio-slider"><strong>Localizer minAreaRatio:</strong> <span id="min-area-ratio-value">${localizerMinAreaRatio.toFixed(4)}</span></label>
-        <input
-          id="min-area-ratio-slider"
-          type="range"
-          min="${MIN_AREA_RATIO_SLIDER_MIN}"
-          max="${MIN_AREA_RATIO_SLIDER_MAX}"
-          step="${MIN_AREA_RATIO_SLIDER_STEP}"
-          value="${localizerMinAreaRatio}"
-        />
-        <label for="max-area-ratio-slider"><strong>Localizer maxAreaRatio:</strong> <span id="max-area-ratio-value">${localizerMaxAreaRatio.toFixed(2)}</span></label>
-        <input
-          id="max-area-ratio-slider"
-          type="range"
-          min="${MAX_AREA_RATIO_SLIDER_MIN}"
-          max="${MAX_AREA_RATIO_SLIDER_MAX}"
-          step="${MAX_AREA_RATIO_SLIDER_STEP}"
-          value="${localizerMaxAreaRatio}"
-        />
-      </div>
+
       <div class="preview-frame">
         <video id="camera-preview" autoplay muted playsinline></video>
-        <div id="ticket-overlay" class="ticket-overlay hidden"></div>
-        <div id="label-overlay" class="label-overlay hidden"></div>
       </div>
+
+      <div class="result-panel">
+        <h2>Parsed Result</h2>
+        <p id="result-name"><strong>Name:</strong> -</p>
+        <p id="result-seat"><strong>Seat:</strong> -</p>
+        <p id="result-confidence"><strong>Confidence:</strong> -</p>
+      </div>
+
+      <div class="result-panel">
+        <h2>Raw OCR</h2>
+        <p id="ocr-count"><strong>Lines:</strong> 0</p>
+        <pre id="ocr-raw" class="ocr-raw">[]</pre>
+      </div>
+
       <div class="actions">
         <button id="start-camera-btn" type="button">Enable Camera</button>
         <button id="stop-camera-btn" type="button" disabled>Stop Camera</button>
@@ -117,17 +86,15 @@ app.innerHTML = `
 const appStateElement = document.querySelector<HTMLParagraphElement>("#app-state");
 const cameraMessageElement = document.querySelector<HTMLParagraphElement>("#camera-message");
 const sampleStatusElement = document.querySelector<HTMLParagraphElement>("#sample-status");
+const ocrSummaryElement = document.querySelector<HTMLParagraphElement>("#ocr-summary");
 const previewElement = document.querySelector<HTMLVideoElement>("#camera-preview");
-const ticketOverlayElement = document.querySelector<HTMLDivElement>("#ticket-overlay");
-const labelOverlayElement = document.querySelector<HTMLDivElement>("#label-overlay");
+const resultNameElement = document.querySelector<HTMLParagraphElement>("#result-name");
+const resultSeatElement = document.querySelector<HTMLParagraphElement>("#result-seat");
+const resultConfidenceElement = document.querySelector<HTMLParagraphElement>("#result-confidence");
+const ocrCountElement = document.querySelector<HTMLParagraphElement>("#ocr-count");
+const ocrRawElement = document.querySelector<HTMLPreElement>("#ocr-raw");
 const cameraSelectElement = document.querySelector<HTMLSelectElement>("#camera-select");
 const switchFacingButton = document.querySelector<HTMLButtonElement>("#switch-facing-btn");
-const minWhitenessSliderElement = document.querySelector<HTMLInputElement>("#min-whiteness-slider");
-const minWhitenessValueElement = document.querySelector<HTMLSpanElement>("#min-whiteness-value");
-const minAreaRatioSliderElement = document.querySelector<HTMLInputElement>("#min-area-ratio-slider");
-const minAreaRatioValueElement = document.querySelector<HTMLSpanElement>("#min-area-ratio-value");
-const maxAreaRatioSliderElement = document.querySelector<HTMLInputElement>("#max-area-ratio-slider");
-const maxAreaRatioValueElement = document.querySelector<HTMLSpanElement>("#max-area-ratio-value");
 const startCameraButton = document.querySelector<HTMLButtonElement>("#start-camera-btn");
 const stopCameraButton = document.querySelector<HTMLButtonElement>("#stop-camera-btn");
 
@@ -135,55 +102,57 @@ if (
   !appStateElement ||
   !cameraMessageElement ||
   !sampleStatusElement ||
+  !ocrSummaryElement ||
   !previewElement ||
-  !ticketOverlayElement ||
-  !labelOverlayElement ||
+  !resultNameElement ||
+  !resultSeatElement ||
+  !resultConfidenceElement ||
+  !ocrCountElement ||
+  !ocrRawElement ||
   !cameraSelectElement ||
   !switchFacingButton ||
-  !minWhitenessSliderElement ||
-  !minWhitenessValueElement ||
-  !minAreaRatioSliderElement ||
-  !minAreaRatioValueElement ||
-  !maxAreaRatioSliderElement ||
-  !maxAreaRatioValueElement ||
   !startCameraButton ||
   !stopCameraButton
 ) {
-  throw new Error("Missing camera preview elements");
+  throw new Error("Missing app elements");
 }
 
-let cameraStream: MediaStream | null = null;
-let samplingTimerId: number | null = null;
-let sampleCount = 0;
-let normalizedFrameCount = 0;
 const sampleCanvas = document.createElement("canvas");
 const sampleContext = sampleCanvas.getContext("2d");
 
-const getActiveLocalizerLabel = (): string => "ticket_localizer_1";
+const seatRegex = /([0-9]{2}[A-Z]{2}[0-9]{2})/;
 
-const getLocalizerOptions = (): TicketLocalizationOptions => ({
-  debug: true,
-  minWhiteness: localizerMinWhiteness,
-  minAreaRatio: localizerMinAreaRatio,
-  maxAreaRatio: localizerMaxAreaRatio
-});
-
-const getTuningSummary = (): string =>
-  `minWhiteness ${localizerMinWhiteness.toFixed(2)}, minAreaRatio ${localizerMinAreaRatio.toFixed(4)}, maxAreaRatio ${localizerMaxAreaRatio.toFixed(2)}`;
-
-const updateTuningValueLabels = (): void => {
-  minWhitenessValueElement.textContent = localizerMinWhiteness.toFixed(2);
-  minAreaRatioValueElement.textContent = localizerMinAreaRatio.toFixed(4);
-  maxAreaRatioValueElement.textContent = localizerMaxAreaRatio.toFixed(2);
+const setAppState = (stateLabel: string): void => {
+  appStateElement.innerHTML = `<strong>App state:</strong> ${stateLabel}`;
 };
 
-const updateCameraMessageForTuning = (): void => {
-  const tuningSummary = getTuningSummary();
-  setCameraMessage(
-    cameraStream
-      ? `Camera preview active. Using ${getActiveLocalizerLabel()} (${tuningSummary}).`
-      : `Camera preview not started. ${tuningSummary}.`
-  );
+const setCameraMessage = (message: string): void => {
+  cameraMessageElement.textContent = message;
+};
+
+const setSampleStatus = (message: string): void => {
+  sampleStatusElement.innerHTML = `<strong>Sample loop:</strong> ${message}`;
+};
+
+const updateOCRDisplay = (items: OCRItem[], result: OCRResult | null): void => {
+  latestOCRItems = items;
+  latestOCRResult = result;
+
+  ocrCountElement.innerHTML = `<strong>Lines:</strong> ${items.length}`;
+  ocrRawElement.textContent = JSON.stringify(items.slice(0, 20), null, 2);
+
+  if (!result) {
+    ocrSummaryElement.innerHTML = "<strong>Latest OCR result:</strong> No valid name/seat parsed";
+    resultNameElement.innerHTML = "<strong>Name:</strong> -";
+    resultSeatElement.innerHTML = "<strong>Seat:</strong> -";
+    resultConfidenceElement.innerHTML = "<strong>Confidence:</strong> -";
+    return;
+  }
+
+  ocrSummaryElement.innerHTML = "<strong>Latest OCR result:</strong> Parsed";
+  resultNameElement.innerHTML = `<strong>Name:</strong> ${result.holderName}`;
+  resultSeatElement.innerHTML = `<strong>Seat:</strong> ${result.seatNumber}`;
+  resultConfidenceElement.innerHTML = `<strong>Confidence:</strong> name ${result.confidence.name.toFixed(2)}, seat ${result.confidence.seat.toFixed(2)}, combined ${result.confidence.combined.toFixed(2)}`;
 };
 
 const inferFacingModeFromLabel = (label: string): "user" | "environment" | null => {
@@ -212,7 +181,7 @@ const updateCameraControlsState = (enabled: boolean): void => {
 
 const populateCameraOptions = async (): Promise<void> => {
   if (!navigator.mediaDevices?.enumerateDevices) {
-    cameraSelectElement.innerHTML = `<option value=\"\">Default camera</option>`;
+    cameraSelectElement.innerHTML = `<option value="">Default camera</option>`;
     return;
   }
 
@@ -220,7 +189,7 @@ const populateCameraOptions = async (): Promise<void> => {
   const videoDevices = devices.filter((device) => device.kind === "videoinput");
 
   if (videoDevices.length === 0) {
-    cameraSelectElement.innerHTML = `<option value=\"\">No camera devices detected</option>`;
+    cameraSelectElement.innerHTML = `<option value="">No camera devices detected</option>`;
     return;
   }
 
@@ -237,11 +206,7 @@ const populateCameraOptions = async (): Promise<void> => {
     cameraSelectElement.append(option);
   }
 
-  if (selectedCameraId) {
-    cameraSelectElement.value = selectedCameraId;
-  } else {
-    cameraSelectElement.value = "";
-  }
+  cameraSelectElement.value = selectedCameraId ?? "";
 };
 
 const getVideoConstraints = (): MediaTrackConstraints => {
@@ -260,62 +225,6 @@ const getVideoConstraints = (): MediaTrackConstraints => {
   };
 };
 
-const setAppState = (stateLabel: string): void => {
-  appStateElement.innerHTML = `<strong>App state:</strong> ${stateLabel}`;
-};
-
-const setCameraMessage = (message: string): void => {
-  cameraMessageElement.textContent = message;
-};
-
-const setSampleStatus = (message: string): void => {
-  sampleStatusElement.innerHTML = `<strong>Sample loop:</strong> ${message}`;
-};
-
-const hideTicketOverlays = (): void => {
-  ticketOverlayElement.classList.add("hidden");
-  labelOverlayElement.classList.add("hidden");
-};
-
-const renderOverlay = (
-  overlayElement: HTMLDivElement,
-  box: { x: number; y: number; width: number; height: number } | null,
-  frameWidth: number,
-  frameHeight: number
-): void => {
-  if (!box || frameWidth <= 0 || frameHeight <= 0) {
-    overlayElement.classList.add("hidden");
-    return;
-  }
-
-  const xPercent = (box.x / frameWidth) * 100;
-  const yPercent = (box.y / frameHeight) * 100;
-  const widthPercent = (box.width / frameWidth) * 100;
-  const heightPercent = (box.height / frameHeight) * 100;
-
-  overlayElement.style.left = `${xPercent}%`;
-  overlayElement.style.top = `${yPercent}%`;
-  overlayElement.style.width = `${widthPercent}%`;
-  overlayElement.style.height = `${heightPercent}%`;
-  overlayElement.classList.remove("hidden");
-};
-
-const renderTicketOverlays = (
-  localization: TicketLocalizationResult,
-  frameWidth: number,
-  frameHeight: number
-): void => {
-  if (!localization.ticketFound || frameWidth <= 0 || frameHeight <= 0) {
-    hideTicketOverlays();
-    return;
-  }
-
-  renderOverlay(ticketOverlayElement, localization.ticketBox ?? localization.box, frameWidth, frameHeight);
-  renderOverlay(labelOverlayElement, localization.labelFound ? localization.labelBox : null, frameWidth, frameHeight);
-};
-
-scanController.subscribe(setAppState);
-
 const stopSampling = (): void => {
   if (samplingTimerId !== null) {
     window.clearInterval(samplingTimerId);
@@ -323,77 +232,167 @@ const stopSampling = (): void => {
   }
 
   sampleCount = 0;
-  normalizedFrameCount = 0;
+  isOCRInFlight = false;
   setSampleStatus("idle");
 };
 
-const sampleFrame = (): void => {
-  if (!sampleContext || !cameraStream) {
-    return;
+const captureFrameBlob = async (): Promise<Blob | null> => {
+  if (!sampleContext) {
+    return null;
   }
 
   const width = previewElement.videoWidth;
   const height = previewElement.videoHeight;
 
   if (width <= 0 || height <= 0) {
+    return null;
+  }
+
+  const maxSide = 1280;
+  const scale = Math.min(1, maxSide / Math.max(width, height));
+  const targetWidth = Math.max(1, Math.round(width * scale));
+  const targetHeight = Math.max(1, Math.round(height * scale));
+
+  sampleCanvas.width = targetWidth;
+  sampleCanvas.height = targetHeight;
+  sampleContext.drawImage(previewElement, 0, 0, targetWidth, targetHeight);
+
+  return new Promise((resolve) => {
+    sampleCanvas.toBlob((blob) => resolve(blob), "image/jpeg", 0.85);
+  });
+};
+
+const sanitizeSeatText = (text: string): string => text.toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+const parseResultFromOCRItems = (items: OCRItem[]): OCRResult | null => {
+  if (items.length === 0) {
+    return null;
+  }
+
+  type Candidate = { text: string; confidence: number; index: number };
+
+  const seatCandidates: Candidate[] = [];
+  const nameCandidates: Candidate[] = [];
+
+  for (const [index, item] of items.entries()) {
+    const normalized = sanitizeSeatText(item.text);
+    const seatMatch = seatRegex.exec(normalized);
+    if (seatMatch?.[1]) {
+      seatCandidates.push({ text: seatMatch[1], confidence: item.confidence, index });
+    }
+
+    const trimmed = item.text.trim();
+    const hasNameLikeChars = /[A-Za-z\u4e00-\u9fff]/.test(trimmed);
+    const looksLikeLabel = /(seat|座位|姓名|name)/i.test(trimmed);
+    if (trimmed.length >= 2 && hasNameLikeChars && !looksLikeLabel) {
+      nameCandidates.push({ text: trimmed, confidence: item.confidence, index });
+    }
+  }
+
+  if (seatCandidates.length === 0) {
+    return null;
+  }
+
+  seatCandidates.sort((a, b) => b.confidence - a.confidence);
+  const seat = seatCandidates[0];
+
+  const filteredNameCandidates = nameCandidates.filter((candidate) => candidate.index !== seat.index);
+  if (filteredNameCandidates.length === 0) {
+    return null;
+  }
+
+  filteredNameCandidates.sort((a, b) => b.confidence - a.confidence);
+  const name = filteredNameCandidates[0];
+
+  const combined = Math.min(name.confidence, seat.confidence);
+  return {
+    holderName: name.text,
+    seatNumber: seat.text,
+    confidence: {
+      name: name.confidence,
+      seat: seat.confidence,
+      combined
+    }
+  };
+};
+
+const fetchOCRItems = async (blob: Blob): Promise<OCRItem[]> => {
+  const formData = new FormData();
+  formData.append("file", blob, "frame.jpg");
+
+  const timeoutMs = Math.max(500, appConfig.scanTimeoutMs);
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(appConfig.ocrBackendUrl, {
+      method: "POST",
+      body: formData,
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      throw new Error(`OCR backend returned ${response.status}`);
+    }
+
+    const data = (await response.json()) as { results?: OCRItem[] };
+    return Array.isArray(data.results) ? data.results : [];
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+};
+
+const sampleFrame = async (): Promise<void> => {
+  if (!cameraStream || isOCRInFlight) {
     return;
   }
 
-  if (sampleCanvas.width !== width) {
-    sampleCanvas.width = width;
+  const blob = await captureFrameBlob();
+  if (!blob) {
+    return;
   }
 
-  if (sampleCanvas.height !== height) {
-    sampleCanvas.height = height;
-  }
-
-  sampleContext.drawImage(previewElement, 0, 0, width, height);
-  const localization = localizeTicketFromVideoFrame(previewElement, getLocalizerOptions());
-  renderTicketOverlays(localization, width, height);
-
-  let pipelineDetails = "";
-  if (localization.labelFound) {
-    const normalizedLabel = normalizeLabelFromVideoFrame(previewElement, localization);
-    if (normalizedLabel.success && normalizedLabel.canvas) {
-      pipelineDetails += `, label roi ${normalizedLabel.canvas.width}x${normalizedLabel.canvas.height}`;
-    }
-  }
-
-  if (localization.ticketFound) {
-    const normalizedTicket = normalizeTicketOrientationFromVideoFrame(previewElement, localization);
-    if (normalizedTicket.success && normalizedTicket.canvas) {
-      normalizedFrameCount += 1;
-      pipelineDetails += `, normalized ${normalizedFrameCount}, ticket roi ${normalizedTicket.canvas.width}x${normalizedTicket.canvas.height}, rotation ${normalizedTicket.appliedRotationDegrees.toFixed(1)}deg, method ${normalizedTicket.method}, warp ${normalizedTicket.warpConfidence.toFixed(2)}`;
-    }
-  }
-
-  const debugDetails = localization.debug
-    ? `, flags t:${localization.ticketFound ? "1" : "0"} l:${localization.labelFound ? "1" : "0"}, stage ${localization.debug.stage}, ticket ${localization.debug.ticketScore.toFixed(2)}, label ${localization.debug.labelScore.toFixed(2)}, light ${localization.debug.frameLighting}`
-    : "";
-  const missReasons =
-    localization.debug && (!localization.ticketFound || !localization.labelFound) && localization.debug.reasons.length > 0
-      ? `, reasons ${localization.debug.reasons.slice(0, 4).join("|")}`
-      : "";
-
+  isOCRInFlight = true;
   sampleCount += 1;
-  const activeLocalizerLabel = getActiveLocalizerLabel();
-  const tuningDetails = `, ${getTuningSummary()}`;
-  setSampleStatus(
-    localization.ticketFound
-      ? `running (${sampleCount} samples, localizer ${activeLocalizerLabel}${tuningDetails}, ticket confidence ${localization.confidence.toFixed(2)}${debugDetails}${pipelineDetails})`
-      : `running (${sampleCount} samples, localizer ${activeLocalizerLabel}${tuningDetails}, searching ticket${debugDetails}${missReasons})`
-  );
+
+  try {
+    const items = await fetchOCRItems(blob);
+    const parsed = parseResultFromOCRItems(items);
+
+    if (parsed) {
+      const passName = parsed.confidence.name >= appConfig.confidenceThresholdName;
+      const passSeat = parsed.confidence.seat >= appConfig.confidenceThresholdSeat;
+      if (passName && passSeat) {
+        scanController.setState("Recognized");
+      } else {
+        scanController.setState("RetryNeeded");
+      }
+    } else {
+      scanController.setState("Scanning");
+    }
+
+    updateOCRDisplay(items, parsed);
+    setSampleStatus(`running (${sampleCount} samples, ${items.length} OCR lines)`);
+    setCameraMessage("Camera preview active. Sending sampled frames to backend OCR.");
+  } catch (error) {
+    scanController.setState("RetryNeeded");
+    setCameraMessage(error instanceof Error ? `OCR request failed: ${error.message}` : "OCR request failed.");
+    setSampleStatus(`running (${sampleCount} samples, backend error)`);
+  } finally {
+    isOCRInFlight = false;
+  }
 };
 
 const startSampling = (): void => {
   stopSampling();
   setSampleStatus("starting");
-  samplingTimerId = window.setInterval(sampleFrame, frameSampleIntervalMs);
+  samplingTimerId = window.setInterval(() => {
+    void sampleFrame();
+  }, frameSampleIntervalMs);
 };
 
 const stopPreview = (): void => {
   stopSampling();
-  hideTicketOverlays();
 
   if (!cameraStream) {
     return;
@@ -437,9 +436,8 @@ const startPreview = async (): Promise<void> => {
     previewElement.srcObject = cameraStream;
     const activeTrack = cameraStream.getVideoTracks()[0];
     const activeSettings = activeTrack?.getSettings();
-    const activeDeviceId = activeSettings?.deviceId;
-    if (activeDeviceId) {
-      selectedCameraId = activeDeviceId;
+    if (activeSettings?.deviceId) {
+      selectedCameraId = activeSettings.deviceId;
     }
 
     if (activeTrack?.label) {
@@ -452,26 +450,22 @@ const startPreview = async (): Promise<void> => {
     await populateCameraOptions();
 
     scanController.setState("Scanning");
-    updateCameraMessageForTuning();
-    sampleCount = 0;
+    setCameraMessage("Camera preview active. Waiting for OCR samples...");
     startSampling();
     stopCameraButton.disabled = false;
     updateCameraControlsState(true);
   } catch (error) {
     stopSampling();
-    hideTicketOverlays();
     scanController.setState("RetryNeeded");
     startCameraButton.disabled = false;
     updateCameraControlsState(hasCameraApi && isChrome);
-    setCameraMessage(
-      error instanceof Error ? `Unable to start camera: ${error.message}` : "Unable to start camera."
-    );
+    setCameraMessage(error instanceof Error ? `Unable to start camera: ${error.message}` : "Unable to start camera.");
   }
 };
 
+scanController.subscribe(setAppState);
 startCameraButton.disabled = !hasCameraApi || !isChrome;
 updateCameraControlsState(hasCameraApi && isChrome);
-updateTuningValueLabels();
 void populateCameraOptions();
 
 startCameraButton.addEventListener("click", () => {
@@ -499,49 +493,6 @@ switchFacingButton.addEventListener("click", () => {
   } else {
     setSwitchFacingLabel();
   }
-});
-
-minWhitenessSliderElement.addEventListener("input", () => {
-  const value = Number(minWhitenessSliderElement.value);
-  if (!Number.isFinite(value)) {
-    return;
-  }
-
-  localizerMinWhiteness = Math.min(MIN_WHITENESS_SLIDER_MAX, Math.max(MIN_WHITENESS_SLIDER_MIN, value));
-  updateTuningValueLabels();
-  updateCameraMessageForTuning();
-});
-
-minAreaRatioSliderElement.addEventListener("input", () => {
-  const value = Number(minAreaRatioSliderElement.value);
-  if (!Number.isFinite(value)) {
-    return;
-  }
-
-  localizerMinAreaRatio = Math.min(MIN_AREA_RATIO_SLIDER_MAX, Math.max(MIN_AREA_RATIO_SLIDER_MIN, value));
-  if (localizerMinAreaRatio >= localizerMaxAreaRatio) {
-    localizerMaxAreaRatio = Math.min(MAX_AREA_RATIO_SLIDER_MAX, localizerMinAreaRatio + MIN_AREA_RATIO_SLIDER_STEP);
-    maxAreaRatioSliderElement.value = localizerMaxAreaRatio.toString();
-  }
-
-  updateTuningValueLabels();
-  updateCameraMessageForTuning();
-});
-
-maxAreaRatioSliderElement.addEventListener("input", () => {
-  const value = Number(maxAreaRatioSliderElement.value);
-  if (!Number.isFinite(value)) {
-    return;
-  }
-
-  localizerMaxAreaRatio = Math.min(MAX_AREA_RATIO_SLIDER_MAX, Math.max(MAX_AREA_RATIO_SLIDER_MIN, value));
-  if (localizerMaxAreaRatio <= localizerMinAreaRatio) {
-    localizerMinAreaRatio = Math.max(MIN_AREA_RATIO_SLIDER_MIN, localizerMaxAreaRatio - MIN_AREA_RATIO_SLIDER_STEP);
-    minAreaRatioSliderElement.value = localizerMinAreaRatio.toString();
-  }
-
-  updateTuningValueLabels();
-  updateCameraMessageForTuning();
 });
 
 navigator.mediaDevices?.addEventListener?.("devicechange", () => {

@@ -1,23 +1,40 @@
 # OCR Ticket Reader
 
-MVP scaffold for a desktop Chrome web app.
+Desktop Chrome MVP for ticket name/seat recognition using a self-hosted PaddleOCR backend.
+
+## Architecture
+- Frontend: Vite + TypeScript webcam app.
+- Backend: FastAPI + PaddleOCR (`POST /ocr`).
+- Flow: camera frame -> backend OCR -> frontend parser extracts `name` and `seat`.
 
 ## Run
-1. `npm install`
-2. `npm run dev`
-3. Open the local URL in desktop Chrome.
 
-## Current Status
-- `T-001` initialized project scaffold.
-- `T-002` added typed runtime config module in `src/config.ts`.
-- `T-003` added shared interfaces in `src/types.ts`.
-- `T-010` implemented webcam permission request and live camera preview.
-- `T-011` implemented scan state controller in `src/scan-controller.ts`.
-- `T-012` added configurable frame sampling loop with start/stop lifecycle handling.
-- `T-020` added in-frame known-template ticket localization and live overlay.
-- `T-021` implemented orientation normalization to canonical ticket view in `src/ticket-normalizer.ts`.
-- `T-022` implemented extraction of name and seat ROIs from normalized ticket coordinates in `src/ticket-roi.ts`.
-- Webcam, OCR, validation, and audio flow are implemented in later tasks.
+### 1) Start backend
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+export PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
+python main.py
+```
+
+Backend runs at `http://127.0.0.1:8000`.
+
+Quick backend check:
+```bash
+curl -X POST http://127.0.0.1:8000/ocr \
+  -F "file=@/home/raner/proj_ocr/ticket_example.jpg"
+```
+
+### 2) Start frontend
+```bash
+cd /home/raner/proj_ocr
+npm install
+npm run dev
+```
+
+Open the local Vite URL in desktop Chrome.
 
 ## Runtime Config (Optional)
 Set with Vite env vars:
@@ -26,3 +43,8 @@ Set with Vite env vars:
 - `VITE_SCAN_TIMEOUT_MS`
 - `VITE_RETRY_INTERVAL_MS`
 - `VITE_AUDIO_PLAYBACK_RATE`
+- `VITE_OCR_BACKEND_URL` (recommended default: `http://127.0.0.1:8000/ocr`)
+
+## Notes
+- `SOFTWARE_SPEC.md` and `tasks.md` are updated for the backend-PaddleOCR workflow.
+- Current backend implementation is in `backend/main.py`.
