@@ -19,12 +19,14 @@ Primary success goal:
 ## 3. Users and Operating Context
 - Primary users: Ticket holders.
 - Usage context: Ticket presented to laptop webcam.
-- Input orientation: Ticket may be placed at random rotations.
+- Input orientation: Ticket may be placed a +45/-45 degrees to horizontal orientation.
 - Environment assumptions for MVP:
   - HD camera available.
-  - Good lighting.
+  - Part of ticket might be under shadow. White label will not be under shadow.
   - Ticket in focus and within optimal distance.
   - Known single ticket template.
+  - Part of ticket might be blocked buy user hand. The entire white label is always visible.
+  - The ticket might be wrinkled.
 
 ## 4. Scope
 ### 4.1 In Scope (MVP)

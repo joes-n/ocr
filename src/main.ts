@@ -57,6 +57,7 @@ app.innerHTML = `
       <div class="preview-frame">
         <video id="camera-preview" autoplay muted playsinline></video>
         <div id="ticket-overlay" class="ticket-overlay hidden"></div>
+        <div id="label-overlay" class="label-overlay hidden"></div>
       </div>
       <div class="roi-debug-panel">
         <div class="roi-debug-card">
@@ -81,6 +82,7 @@ const cameraMessageElement = document.querySelector<HTMLParagraphElement>("#came
 const sampleStatusElement = document.querySelector<HTMLParagraphElement>("#sample-status");
 const previewElement = document.querySelector<HTMLVideoElement>("#camera-preview");
 const ticketOverlayElement = document.querySelector<HTMLDivElement>("#ticket-overlay");
+const labelOverlayElement = document.querySelector<HTMLDivElement>("#label-overlay");
 const nameRoiLabelElement = document.querySelector<HTMLParagraphElement>("#name-roi-label");
 const seatRoiLabelElement = document.querySelector<HTMLParagraphElement>("#seat-roi-label");
 const nameRoiPreviewElement = document.querySelector<HTMLCanvasElement>("#name-roi-preview");
@@ -96,6 +98,7 @@ if (
   !sampleStatusElement ||
   !previewElement ||
   !ticketOverlayElement ||
+  !labelOverlayElement ||
   !nameRoiLabelElement ||
   !seatRoiLabelElement ||
   !nameRoiPreviewElement ||
@@ -248,30 +251,46 @@ const setSampleStatus = (message: string): void => {
   sampleStatusElement.innerHTML = `<strong>Sample loop:</strong> ${message}`;
 };
 
-const hideTicketOverlay = (): void => {
+const hideTicketOverlays = (): void => {
   ticketOverlayElement.classList.add("hidden");
+  labelOverlayElement.classList.add("hidden");
 };
 
-const renderTicketOverlay = (
+const renderOverlay = (
+  overlayElement: HTMLDivElement,
+  box: { x: number; y: number; width: number; height: number } | null,
+  frameWidth: number,
+  frameHeight: number
+): void => {
+  if (!box || frameWidth <= 0 || frameHeight <= 0) {
+    overlayElement.classList.add("hidden");
+    return;
+  }
+
+  const xPercent = (box.x / frameWidth) * 100;
+  const yPercent = (box.y / frameHeight) * 100;
+  const widthPercent = (box.width / frameWidth) * 100;
+  const heightPercent = (box.height / frameHeight) * 100;
+
+  overlayElement.style.left = `${xPercent}%`;
+  overlayElement.style.top = `${yPercent}%`;
+  overlayElement.style.width = `${widthPercent}%`;
+  overlayElement.style.height = `${heightPercent}%`;
+  overlayElement.classList.remove("hidden");
+};
+
+const renderTicketOverlays = (
   localization: ReturnType<typeof localizeTicketFromVideoFrame>,
   frameWidth: number,
   frameHeight: number
 ): void => {
-  if (!localization.found || !localization.box || frameWidth <= 0 || frameHeight <= 0) {
-    hideTicketOverlay();
+  if (!localization.found || frameWidth <= 0 || frameHeight <= 0) {
+    hideTicketOverlays();
     return;
   }
 
-  const xPercent = (localization.box.x / frameWidth) * 100;
-  const yPercent = (localization.box.y / frameHeight) * 100;
-  const widthPercent = (localization.box.width / frameWidth) * 100;
-  const heightPercent = (localization.box.height / frameHeight) * 100;
-
-  ticketOverlayElement.style.left = `${xPercent}%`;
-  ticketOverlayElement.style.top = `${yPercent}%`;
-  ticketOverlayElement.style.width = `${widthPercent}%`;
-  ticketOverlayElement.style.height = `${heightPercent}%`;
-  ticketOverlayElement.classList.remove("hidden");
+  renderOverlay(ticketOverlayElement, localization.ticketBox ?? localization.box, frameWidth, frameHeight);
+  renderOverlay(labelOverlayElement, localization.labelBox, frameWidth, frameHeight);
 };
 
 scanController.subscribe(setAppState);
@@ -311,7 +330,7 @@ const sampleFrame = (): void => {
 
   sampleContext.drawImage(previewElement, 0, 0, width, height);
   const localization = localizeTicketFromVideoFrame(previewElement);
-  renderTicketOverlay(localization, width, height);
+  renderTicketOverlays(localization, width, height);
 
   let pipelineDetails = "";
   if (localization.found) {
@@ -370,7 +389,7 @@ const startSampling = (): void => {
 
 const stopPreview = (): void => {
   stopSampling();
-  hideTicketOverlay();
+  hideTicketOverlays();
 
   if (!cameraStream) {
     return;
@@ -436,7 +455,7 @@ const startPreview = async (): Promise<void> => {
     updateCameraControlsState(true);
   } catch (error) {
     stopSampling();
-    hideTicketOverlay();
+    hideTicketOverlays();
     scanController.setState("RetryNeeded");
     startCameraButton.disabled = false;
     updateCameraControlsState(hasCameraApi && isChrome);
