@@ -147,8 +147,10 @@ const LABEL_BRIGHT_MIN_FLOOR = 90 / 255;
 const LABEL_BRIGHT_MIN_DEFAULT = 110 / 255;
 const LABEL_BORDER_MARGIN_RATIO = 0.02;
 const LABEL_BLUE_INSIDE_MAX = 0.12;
+const LABEL_BLUE_INSIDE_HARD_MAX = 0.06;
 const LABEL_ASPECT_MIN = 1.7;
 const LABEL_ASPECT_MAX = 7.2;
+const LABEL_INSIDE_TICKET_MIN = 0.88;
 
 const SKIN_HUE_A_MIN = 0;
 const SKIN_HUE_A_MAX = 35;
@@ -376,6 +378,9 @@ const computeLabelInsideRatio = (label: TicketBoundingBox, ticket: TicketBoundin
   }
   return clamp(boxArea(intersection) / boxArea(label), 0, 1);
 };
+
+const computeComponentInsideRatio = (component: ConnectedComponent, container: TicketBoundingBox): number =>
+  computeLabelInsideRatio(componentToBox(component), container);
 
 const clipLabelToTicket = (label: TicketBoundingBox, ticket: TicketBoundingBox): TicketBoundingBox | null =>
   getIntersectionBox(label, ticket);
@@ -966,6 +971,7 @@ const pickBestLabelCandidateInWindow = (
   searchWindow: SearchWindow,
   lighting: LightingProfile
 ): LabelCandidate | null => {
+  const ticketBox = ticketCandidate ? componentToBox(ticketCandidate.component) : null;
   const length = width * height;
   const filteredLabelMask = new Uint8Array(length);
 
@@ -980,7 +986,18 @@ const pickBestLabelCandidateInWindow = (
   let best: LabelCandidate | null = null;
 
   for (const component of labelCandidates) {
+    if (ticketBox) {
+      const insideRatio = computeComponentInsideRatio(component, ticketBox);
+      if (insideRatio < LABEL_INSIDE_TICKET_MIN) {
+        continue;
+      }
+    }
+
     const scored = scoreLabelCandidate(component, masks, buffers, width, height, ticketCandidate, searchWindow, lighting);
+    if (scored.insideBlueRatio > LABEL_BLUE_INSIDE_HARD_MAX) {
+      continue;
+    }
+
     if (!best || scored.score > best.score) {
       best = scored;
     }
@@ -1224,6 +1241,12 @@ export const localizeTicketFromVideoFrame = (
   if (labelCandidate && labelCandidate.insideBlueRatio > LABEL_BLUE_INSIDE_MAX) {
     addReason(reasons, "LABEL_BLUE_INSIDE_HIGH");
   }
+  if (labelCandidate && labelCandidate.insideBlueRatio > LABEL_BLUE_INSIDE_HARD_MAX) {
+    labelFound = false;
+    labelScore = 0;
+    labelBoxScaled = null;
+    addReason(reasons, "LABEL_BLUE_INSIDE_HARD_FAIL");
+  }
   if (labelCandidate && labelScore < labelScorePass) {
     addReason(reasons, "LOW_LABEL_SCORE");
   }
@@ -1232,23 +1255,20 @@ export const localizeTicketFromVideoFrame = (
     labelBoxScaled = null;
     addReason(reasons, "LABEL_BORDER_TOUCH_HARD_FAIL");
   }
+  if (!ticketCandidate && labelCandidate) {
+    labelFound = false;
+    labelScore = 0;
+    labelBoxScaled = null;
+    addReason(reasons, "LABEL_REQUIRES_BLUE_TICKET");
+  }
 
   if (ticketBoxScaled && labelBoxScaled) {
     labelInsideRatio = computeLabelInsideRatio(labelBoxScaled, ticketBoxScaled);
-    if (labelInsideRatio < 0.6) {
+    if (labelInsideRatio < LABEL_INSIDE_TICKET_MIN) {
+      labelFound = false;
+      labelScore = 0;
+      labelBoxScaled = null;
       addReason(reasons, "LABEL_OUTSIDE_TICKET");
-    } else if (labelInsideRatio < 1) {
-      const clipped = clipLabelToTicket(labelBoxScaled, ticketBoxScaled);
-      if (clipped) {
-        labelBoxScaled = clipped;
-        labelScore *= 0.9;
-        addReason(reasons, "LABEL_CLIPPED_TO_TICKET");
-      } else {
-        labelFound = false;
-        labelScore = 0;
-        labelBoxScaled = null;
-        addReason(reasons, "LABEL_OUTSIDE_TICKET");
-      }
     }
 
     if (labelFound && labelScore < labelScorePass) {
@@ -1258,28 +1278,20 @@ export const localizeTicketFromVideoFrame = (
     }
   }
 
-  if (labelFound && labelBoxScaled && (!ticketFound || labelInsideRatio < 0.6)) {
+  if (labelFound && labelBoxScaled && ticketBoxScaled && !ticketFound && labelInsideRatio >= LABEL_INSIDE_TICKET_MIN) {
     stage = "label-fallback";
     fallbackUsed = true;
-    ticketBoxScaled = inferTicketFromLabel(labelBoxScaled, targetWidth, targetHeight);
     ticketFound = true;
-    labelInsideRatio = computeLabelInsideRatio(labelBoxScaled, ticketBoxScaled);
-    addReason(reasons, "TICKET_INFERRED_FROM_LABEL");
+    addReason(reasons, "LABEL_SUPPORTS_TICKET");
   }
 
   if (labelFound && ticketBoxScaled && labelBoxScaled) {
     labelInsideRatio = computeLabelInsideRatio(labelBoxScaled, ticketBoxScaled);
-    if (labelInsideRatio < 0.6) {
+    if (labelInsideRatio < LABEL_INSIDE_TICKET_MIN) {
       labelFound = false;
+      labelScore = 0;
       labelBoxScaled = null;
       addReason(reasons, "LABEL_OUTSIDE_TICKET");
-    } else if (labelInsideRatio < 1) {
-      const clipped = clipLabelToTicket(labelBoxScaled, ticketBoxScaled);
-      if (clipped) {
-        labelBoxScaled = clipped;
-        labelScore *= 0.9;
-        addReason(reasons, "LABEL_CLIPPED_TO_TICKET");
-      }
     }
   }
 
@@ -1319,31 +1331,20 @@ export const localizeTicketFromVideoFrame = (
   }
   confidence = clamp(confidence, 0, 1);
 
-  if (!ticketFound && labelCandidate && labelScore >= LABEL_FALLBACK_MIN_SCORE && labelBoxScaled) {
+  if (!ticketFound && ticketBoxScaled && labelFound && labelScore >= LABEL_FALLBACK_MIN_SCORE && labelBoxScaled) {
     stage = "label-fallback";
     fallbackUsed = true;
-    ticketBoxScaled = inferTicketFromLabel(labelBoxScaled, targetWidth, targetHeight);
-    confidence = clamp(Math.max(confidence, 0.5 + labelScore * 0.35), 0, 1);
+    confidence = clamp(Math.max(confidence, 0.48 + labelScore * 0.28), 0, 1);
     ticketFound = confidence >= LABEL_FALLBACK_PASS_THRESHOLD;
-    addReason(reasons, "TICKET_INFERRED_FROM_LABEL");
+    addReason(reasons, "LABEL_SUPPORTS_TICKET");
 
     if (ticketFound) {
       labelInsideRatio = computeLabelInsideRatio(labelBoxScaled, ticketBoxScaled);
-      if (labelInsideRatio < 0.6) {
+      if (labelInsideRatio < LABEL_INSIDE_TICKET_MIN) {
         labelFound = false;
+        labelScore = 0;
         labelBoxScaled = null;
         addReason(reasons, "LABEL_OUTSIDE_TICKET");
-      } else if (labelInsideRatio < 1) {
-        const clipped = clipLabelToTicket(labelBoxScaled, ticketBoxScaled);
-        if (clipped) {
-          labelBoxScaled = clipped;
-          labelScore *= 0.9;
-          addReason(reasons, "LABEL_CLIPPED_TO_TICKET");
-        } else {
-          labelFound = false;
-          labelBoxScaled = null;
-          addReason(reasons, "LABEL_OUTSIDE_TICKET");
-        }
       }
 
       labelFound = labelBoxScaled !== null && labelScore >= labelScorePass;
@@ -1379,17 +1380,11 @@ export const localizeTicketFromVideoFrame = (
 
       if (ticketFound && labelBoxScaled && labelScore >= labelScorePass) {
         labelInsideRatio = computeLabelInsideRatio(labelBoxScaled, ticketBoxScaled);
-        if (labelInsideRatio < 0.6) {
+        if (labelInsideRatio < LABEL_INSIDE_TICKET_MIN) {
           labelFound = false;
+          labelScore = 0;
           labelBoxScaled = null;
           addReason(reasons, "LABEL_OUTSIDE_TICKET");
-        } else if (labelInsideRatio < 1) {
-          const clipped = clipLabelToTicket(labelBoxScaled, ticketBoxScaled);
-          if (clipped) {
-            labelBoxScaled = clipped;
-            labelScore *= 0.9;
-            addReason(reasons, "LABEL_CLIPPED_TO_TICKET");
-          }
         }
 
         labelFound = labelBoxScaled !== null && labelScore >= labelScorePass;
