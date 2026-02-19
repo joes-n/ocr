@@ -5,228 +5,66 @@ export type TicketBoundingBox = {
   height: number;
 };
 
+type FrameLighting = "normal" | "dim" | "very-dim";
+
+export type TicketLocalizationDebug = {
+  stage: "white-rectangle";
+  reasons: string[];
+  ticketScore: number;
+  labelScore: number;
+  frameLighting: FrameLighting;
+  candidateCount: number;
+  selectedAreaRatio: number;
+  selectedWhiteness: number;
+  selectedFillRatio: number;
+};
+
 export type TicketLocalizationResult = {
   found: boolean;
   ticketFound: boolean;
   labelFound: boolean;
   confidence: number;
-  // Kept for backward compatibility. Equivalent to ticketBox.
   box: TicketBoundingBox | null;
   ticketBox: TicketBoundingBox | null;
   labelBox: TicketBoundingBox | null;
   debug?: TicketLocalizationDebug;
 };
 
-type ConnectedComponent = {
-  minX: number;
-  minY: number;
-  maxX: number;
-  maxY: number;
-  area: number;
-  pixels: number[];
-};
-
-type FrameLighting = "normal" | "dim" | "very-dim";
-
-type LightingProfile = {
-  frameLighting: FrameLighting;
-  blueValueMinEffective: number;
-  labelValueMinEffective: number;
-  blueHueSupportMinEffective: number;
-  blueHueSupportMaxEffective: number;
-};
-
-type PixelBuffers = {
-  hue: Float32Array;
-  saturation: Float32Array;
-  value: Float32Array;
-  normalizedValue: Float32Array;
-  minChannel: Float32Array;
-  channelSpread: Float32Array;
-  luminance: Uint8Array;
-  p10Value: number;
-  p50Value: number;
-  p90Value: number;
-  p70MinChannel: number;
-};
-
-type StageMasks = {
-  blueMask: Uint8Array;
-  labelMask: Uint8Array;
-  skinMask: Uint8Array;
-  edgeMask: Uint8Array;
-  edgeOnlyMask: Uint8Array;
-  blueNeighborhoodMask: Uint8Array;
-};
-
-type TicketCandidate = {
-  component: ConnectedComponent;
-  score: number;
-  blueRatio: number;
-  skinRatio: number;
-  edgeRatio: number;
-  aspect: number;
-};
-
-type LabelCandidate = {
-  component: ConnectedComponent;
-  score: number;
-  adjacencyRatio: number;
-  fillRatio: number;
-  meanSaturation: number;
-  meanValue: number;
-  insideBlueRatio: number;
-  edgeDensity: number;
-  borderTouchRatio: number;
-  aspectRatio: number;
-};
-
-type SearchWindow = {
-  minX: number;
-  minY: number;
-  maxX: number;
-  maxY: number;
-};
-
-type LabelSearchResult = {
-  candidate: LabelCandidate | null;
-  searchedFullFrame: boolean;
-};
-
-type EdgeCandidate = {
-  component: ConnectedComponent;
-  score: number;
-  skinRatio: number;
-  edgeRatio: number;
-};
-
-export type TicketLocalizationDebug = {
-  stage: "blue-then-label" | "label-fallback" | "edge-fallback";
-  reasons: string[];
-  ticketScore: number;
-  labelScore: number;
-  edgeScore: number;
-  blueRatio: number;
-  labelRatio: number;
-  skinRatio: number;
-  edgeRatio: number;
-  fallbackUsed: boolean;
-  confidenceBeforeCaps: number;
-  confidenceAfterCaps: number;
-  frameLighting: FrameLighting;
-  blueValueMinEffective: number;
-  labelValueMinEffective: number;
-  labelInsideRatio: number;
-};
-
 export type TicketLocalizerOptions = {
   debug?: boolean;
-  minBlueSupportRatio?: number;
+  minWhiteness?: number;
+  minAreaRatio?: number;
+  maxAreaRatio?: number;
 };
 
-const LOCALIZE_MAX_DIMENSION = 360;
+type ComponentCandidate = {
+  box: TicketBoundingBox;
+  bboxArea: number;
+  areaRatio: number;
+  fillRatio: number;
+  whiteness: number;
+};
 
-const MIN_TICKET_AREA_RATIO = 0.03;
-const MIN_EDGE_AREA_RATIO = 0.03;
-const MIN_LABEL_AREA_RATIO = 0.0015;
+type ThresholdProfile = {
+  frameLighting: FrameLighting;
+  minValue: number;
+  minWhiteness: number;
+  maxSaturation: number;
+  maxSpread: number;
+};
 
-const TICKET_TARGET_ASPECT = 2.5;
-const TICKET_ASPECT_MIN = 1.8;
-const TICKET_ASPECT_MAX = 3.4;
-
-const BLUE_HUE_CORE_MIN = 186;
-const BLUE_HUE_CORE_MAX = 244;
-const BLUE_HUE_SUPPORT_MIN = 170;
-const BLUE_HUE_SUPPORT_MAX = 258;
-const BLUE_SAT_CORE_MIN = 0.2;
-const BLUE_SAT_SUPPORT_MIN = 0.12;
-
-const LABEL_SATURATION_MAX = 0.15;
-const LABEL_NEUTRAL_SPREAD_MAX = 16 / 255;
-const LABEL_BRIGHT_MIN_FLOOR = 90 / 255;
-const LABEL_BRIGHT_MIN_DEFAULT = 110 / 255;
-const LABEL_BORDER_MARGIN_RATIO = 0.02;
-const LABEL_BLUE_INSIDE_MAX = 0.12;
-const LABEL_BLUE_INSIDE_HARD_MAX = 0.06;
-const LABEL_ASPECT_MIN = 1.7;
-const LABEL_ASPECT_MAX = 7.2;
-const LABEL_INSIDE_TICKET_MIN = 0.88;
-
-const SKIN_HUE_A_MIN = 0;
-const SKIN_HUE_A_MAX = 35;
-const SKIN_HUE_B_MIN = 340;
-const SKIN_HUE_B_MAX = 360;
-const SKIN_SAT_MIN = 0.16;
-const SKIN_SAT_MAX = 0.78;
-const SKIN_VALUE_MIN = 0.2;
-const SKIN_VALUE_MAX = 0.98;
-const SKIN_HEAVY_RATIO_THRESHOLD = 0.3;
-
-const EDGE_THRESHOLD_SCALE = 0.65;
-
-const BLUE_LABEL_COMBINED_PASS_THRESHOLD = 0.48;
-const MIN_TICKET_SCORE_PASS = 0.22;
-const MIN_LABEL_SCORE_PASS = 0.26;
-const LABEL_FALLBACK_MIN_SCORE = 0.68;
-const LABEL_FALLBACK_PASS_THRESHOLD = 0.5;
-const EDGE_FALLBACK_PASS_THRESHOLD = 0.55;
-
-const MIN_BLUE_SUPPORT_RATIO = 0.04;
-
-const FALLBACK_TICKET_WIDTH_MULTIPLIER = 1.95;
-const FALLBACK_TICKET_HEIGHT_MULTIPLIER = 2.55;
-const FALLBACK_TICKET_X_CENTER_OFFSET = 0.48;
-const FALLBACK_TICKET_Y_CENTER_OFFSET = 0.58;
+const LOCALIZE_MAX_DIMENSION = 480;
+const DEFAULT_MIN_AREA_RATIO = 0.003;
+const DEFAULT_MAX_AREA_RATIO = 0.35;
+const MIN_FILL_RATIO = 0.58;
+const MIN_ASPECT_RATIO = 1.1;
+const MAX_ASPECT_RATIO = 8;
+const WHITE_BAND = 0.08;
 
 const workCanvas = document.createElement("canvas");
 const workContext = workCanvas.getContext("2d", { willReadFrequently: true });
 
 const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value));
-const hueInRange = (hue: number, min: number, max: number): boolean =>
-  min <= max ? hue >= min && hue <= max : hue >= min || hue <= max;
-
-const addReason = (reasons: string[], reason: string): void => {
-  if (!reasons.includes(reason)) {
-    reasons.push(reason);
-  }
-};
-
-const rgbToHsv = (
-  red: number,
-  green: number,
-  blue: number
-): {
-  hue: number;
-  saturation: number;
-  value: number;
-} => {
-  const r = red / 255;
-  const g = green / 255;
-  const b = blue / 255;
-
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const delta = max - min;
-
-  let hue = 0;
-  if (delta !== 0) {
-    if (max === r) {
-      hue = ((g - b) / delta) % 6;
-    } else if (max === g) {
-      hue = (b - r) / delta + 2;
-    } else {
-      hue = (r - g) / delta + 4;
-    }
-
-    hue *= 60;
-    if (hue < 0) {
-      hue += 360;
-    }
-  }
-
-  const saturation = max === 0 ? 0 : delta / max;
-  return { hue, saturation, value: max };
-};
 
 const percentileFromHistogram = (histogram: Uint32Array, total: number, percentile: number): number => {
   if (total <= 0) {
@@ -245,33 +83,36 @@ const percentileFromHistogram = (histogram: Uint32Array, total: number, percenti
   return 1;
 };
 
-const deriveLightingProfile = (p90Value: number): LightingProfile => {
-  if (p90Value < 0.38) {
+const deriveThresholdProfile = (
+  p90Value: number,
+  optionMinWhiteness: number | undefined
+): ThresholdProfile => {
+  if (p90Value < 0.42) {
     return {
       frameLighting: "very-dim",
-      blueValueMinEffective: 0.05,
-      labelValueMinEffective: 0.52,
-      blueHueSupportMinEffective: BLUE_HUE_SUPPORT_MIN - 8,
-      blueHueSupportMaxEffective: BLUE_HUE_SUPPORT_MAX + 8
+      minValue: 0.45,
+      minWhiteness: optionMinWhiteness ?? 0.4,
+      maxSaturation: 0.34,
+      maxSpread: 85
     };
   }
 
-  if (p90Value < 0.52) {
+  if (p90Value < 0.58) {
     return {
       frameLighting: "dim",
-      blueValueMinEffective: 0.08,
-      labelValueMinEffective: 0.6,
-      blueHueSupportMinEffective: BLUE_HUE_SUPPORT_MIN - 4,
-      blueHueSupportMaxEffective: BLUE_HUE_SUPPORT_MAX + 4
+      minValue: 0.55,
+      minWhiteness: optionMinWhiteness ?? 0.5,
+      maxSaturation: 0.28,
+      maxSpread: 75
     };
   }
 
   return {
     frameLighting: "normal",
-    blueValueMinEffective: 0.12,
-    labelValueMinEffective: 0.68,
-    blueHueSupportMinEffective: BLUE_HUE_SUPPORT_MIN,
-    blueHueSupportMaxEffective: BLUE_HUE_SUPPORT_MAX
+    minValue: 0.64,
+    minWhiteness: optionMinWhiteness ?? 0.58,
+    maxSaturation: 0.22,
+    maxSpread: 65
   };
 };
 
@@ -317,1134 +158,270 @@ const erode3x3 = (source: Uint8Array, width: number, height: number): Uint8Array
   return output;
 };
 
-const open3x3 = (source: Uint8Array, width: number, height: number): Uint8Array =>
-  dilate3x3(erode3x3(source, width, height), width, height);
-
 const close3x3 = (source: Uint8Array, width: number, height: number): Uint8Array =>
   erode3x3(dilate3x3(source, width, height), width, height);
 
-const componentToBox = (component: ConnectedComponent): TicketBoundingBox => ({
-  x: component.minX,
-  y: component.minY,
-  width: component.maxX - component.minX + 1,
-  height: component.maxY - component.minY + 1
-});
+const open3x3 = (source: Uint8Array, width: number, height: number): Uint8Array =>
+  dilate3x3(erode3x3(source, width, height), width, height);
 
-const scaleBox = (box: TicketBoundingBox, scale: number): TicketBoundingBox => ({
-  x: Math.round(box.x * scale),
-  y: Math.round(box.y * scale),
-  width: Math.max(1, Math.round(box.width * scale)),
-  height: Math.max(1, Math.round(box.height * scale))
-});
-
-const clampBoxToBounds = (box: TicketBoundingBox, width: number, height: number): TicketBoundingBox => {
-  const left = clamp(box.x, 0, width - 1);
-  const top = clamp(box.y, 0, height - 1);
-  const right = clamp(box.x + box.width, left + 1, width);
-  const bottom = clamp(box.y + box.height, top + 1, height);
+const toScaledBox = (
+  box: TicketBoundingBox,
+  scale: number,
+  frameWidth: number,
+  frameHeight: number
+): TicketBoundingBox => {
+  const x = clamp(Math.round(box.x / scale), 0, frameWidth - 1);
+  const y = clamp(Math.round(box.y / scale), 0, frameHeight - 1);
+  const width = Math.max(1, Math.round(box.width / scale));
+  const height = Math.max(1, Math.round(box.height / scale));
+  const right = clamp(x + width, x + 1, frameWidth);
+  const bottom = clamp(y + height, y + 1, frameHeight);
 
   return {
-    x: left,
-    y: top,
-    width: Math.max(1, right - left),
-    height: Math.max(1, bottom - top)
+    x,
+    y,
+    width: Math.max(1, right - x),
+    height: Math.max(1, bottom - y)
   };
 };
 
-const boxArea = (box: TicketBoundingBox): number => Math.max(1, box.width * box.height);
+const buildFailureResult = (
+  reasons: string[],
+  frameLighting: FrameLighting,
+  debugEnabled: boolean
+): TicketLocalizationResult => ({
+  found: false,
+  ticketFound: false,
+  labelFound: false,
+  confidence: 0,
+  box: null,
+  ticketBox: null,
+  labelBox: null,
+  debug: debugEnabled
+    ? {
+        stage: "white-rectangle",
+        reasons,
+        ticketScore: 0,
+        labelScore: 0,
+        frameLighting,
+        candidateCount: 0,
+        selectedAreaRatio: 0,
+        selectedWhiteness: 0,
+        selectedFillRatio: 0
+      }
+    : undefined
+});
 
-const getIntersectionBox = (a: TicketBoundingBox, b: TicketBoundingBox): TicketBoundingBox | null => {
-  const left = Math.max(a.x, b.x);
-  const top = Math.max(a.y, b.y);
-  const right = Math.min(a.x + a.width, b.x + b.width);
-  const bottom = Math.min(a.y + a.height, b.y + b.height);
+export const localizeTicketFromVideoFrame = (
+  sourceVideo: HTMLVideoElement,
+  options: TicketLocalizerOptions = {}
+): TicketLocalizationResult => {
+  const frameWidth = sourceVideo.videoWidth;
+  const frameHeight = sourceVideo.videoHeight;
+  const reasons: string[] = [];
+  const debugEnabled = options.debug === true;
 
-  if (right <= left || bottom <= top) {
-    return null;
+  if (!workContext || frameWidth <= 0 || frameHeight <= 0) {
+    reasons.push("frame-unavailable");
+    return buildFailureResult(reasons, "normal", debugEnabled);
   }
 
-  return {
-    x: left,
-    y: top,
-    width: right - left,
-    height: bottom - top
-  };
-};
+  const scale = Math.min(1, LOCALIZE_MAX_DIMENSION / Math.max(frameWidth, frameHeight));
+  const sampleWidth = Math.max(1, Math.round(frameWidth * scale));
+  const sampleHeight = Math.max(1, Math.round(frameHeight * scale));
+  const frameArea = sampleWidth * sampleHeight;
 
-const computeLabelInsideRatio = (label: TicketBoundingBox, ticket: TicketBoundingBox): number => {
-  const intersection = getIntersectionBox(label, ticket);
-  if (!intersection) {
-    return 0;
-  }
-  return clamp(boxArea(intersection) / boxArea(label), 0, 1);
-};
+  workCanvas.width = sampleWidth;
+  workCanvas.height = sampleHeight;
+  workContext.drawImage(sourceVideo, 0, 0, sampleWidth, sampleHeight);
 
-const computeComponentInsideRatio = (component: ConnectedComponent, container: TicketBoundingBox): number =>
-  computeLabelInsideRatio(componentToBox(component), container);
+  const imageData = workContext.getImageData(0, 0, sampleWidth, sampleHeight);
+  const pixels = imageData.data;
 
-const clipLabelToTicket = (label: TicketBoundingBox, ticket: TicketBoundingBox): TicketBoundingBox | null =>
-  getIntersectionBox(label, ticket);
-
-const computeEdgeMask = (luminance: Uint8Array, width: number, height: number): Uint8Array => {
-  const edgeMagnitude = new Float32Array(width * height);
-  let sum = 0;
-  let sumSq = 0;
-  let sampleCount = 0;
-
-  for (let y = 1; y < height - 1; y += 1) {
-    for (let x = 1; x < width - 1; x += 1) {
-      const topLeft = luminance[(y - 1) * width + (x - 1)];
-      const top = luminance[(y - 1) * width + x];
-      const topRight = luminance[(y - 1) * width + (x + 1)];
-      const left = luminance[y * width + (x - 1)];
-      const right = luminance[y * width + (x + 1)];
-      const bottomLeft = luminance[(y + 1) * width + (x - 1)];
-      const bottom = luminance[(y + 1) * width + x];
-      const bottomRight = luminance[(y + 1) * width + (x + 1)];
-
-      const gx = -topLeft + topRight - (left * 2) + (right * 2) - bottomLeft + bottomRight;
-      const gy = -topLeft - (top * 2) - topRight + bottomLeft + (bottom * 2) + bottomRight;
-      const magnitude = Math.abs(gx) + Math.abs(gy);
-
-      const index = y * width + x;
-      edgeMagnitude[index] = magnitude;
-      sum += magnitude;
-      sumSq += magnitude * magnitude;
-      sampleCount += 1;
-    }
-  }
-
-  if (sampleCount === 0) {
-    return new Uint8Array(width * height);
-  }
-
-  const mean = sum / sampleCount;
-  const stdDev = Math.sqrt(Math.max(0, sumSq / sampleCount - mean * mean));
-  const threshold = mean + stdDev * EDGE_THRESHOLD_SCALE;
-
-  const edgeMask = new Uint8Array(width * height);
-  for (let index = 0; index < edgeMask.length; index += 1) {
-    edgeMask[index] = edgeMagnitude[index] >= threshold ? 1 : 0;
-  }
-
-  return edgeMask;
-};
-
-const buildPixelBuffers = (pixels: Uint8ClampedArray, width: number, height: number): PixelBuffers => {
-  const length = width * height;
-  const hue = new Float32Array(length);
-  const saturation = new Float32Array(length);
-  const value = new Float32Array(length);
-  const normalizedValue = new Float32Array(length);
-  const minChannel = new Float32Array(length);
-  const channelSpread = new Float32Array(length);
-  const luminance = new Uint8Array(length);
   const valueHistogram = new Uint32Array(256);
-  const minChannelHistogram = new Uint32Array(256);
-
-  for (let index = 0; index < length; index += 1) {
-    const pixelOffset = index * 4;
-    const red = pixels[pixelOffset];
-    const green = pixels[pixelOffset + 1];
-    const blue = pixels[pixelOffset + 2];
-    const minRgb = Math.min(red, green, blue);
-    const maxRgb = Math.max(red, green, blue);
-
-    const hsv = rgbToHsv(red, green, blue);
-    hue[index] = hsv.hue;
-    saturation[index] = hsv.saturation;
-    value[index] = hsv.value;
-    minChannel[index] = minRgb / 255;
-    channelSpread[index] = (maxRgb - minRgb) / 255;
-    luminance[index] = Math.round(0.299 * red + 0.587 * green + 0.114 * blue);
-
-    const valueBucket = clamp(Math.round(hsv.value * 255), 0, 255);
-    valueHistogram[valueBucket] += 1;
-    const minBucket = clamp(minRgb, 0, 255);
-    minChannelHistogram[minBucket] += 1;
+  for (let index = 0; index < frameArea; index += 1) {
+    const offset = index * 4;
+    const red = pixels[offset];
+    const green = pixels[offset + 1];
+    const blue = pixels[offset + 2];
+    const maxChannel = Math.max(red, green, blue);
+    valueHistogram[maxChannel] += 1;
   }
 
-  const p10Value = percentileFromHistogram(valueHistogram, length, 0.1);
-  const p50Value = percentileFromHistogram(valueHistogram, length, 0.5);
-  const p90Value = percentileFromHistogram(valueHistogram, length, 0.9);
-  const p70MinChannel = percentileFromHistogram(minChannelHistogram, length, 0.7);
-  const valueRange = Math.max(0.12, p90Value - p10Value);
+  const p90Value = percentileFromHistogram(valueHistogram, frameArea, 0.9);
+  const profile = deriveThresholdProfile(p90Value, options.minWhiteness);
+  const minAreaRatio = options.minAreaRatio ?? DEFAULT_MIN_AREA_RATIO;
+  const maxAreaRatio = options.maxAreaRatio ?? DEFAULT_MAX_AREA_RATIO;
 
-  for (let index = 0; index < length; index += 1) {
-    normalizedValue[index] = clamp((value[index] - p10Value) / valueRange, 0, 1);
-  }
+  const whiteness = new Float32Array(frameArea);
+  const whiteMask = new Uint8Array(frameArea);
 
-  return {
-    hue,
-    saturation,
-    value,
-    normalizedValue,
-    minChannel,
-    channelSpread,
-    luminance,
-    p10Value,
-    p50Value,
-    p90Value,
-    p70MinChannel
-  };
-};
+  for (let index = 0; index < frameArea; index += 1) {
+    const offset = index * 4;
+    const red = pixels[offset];
+    const green = pixels[offset + 1];
+    const blue = pixels[offset + 2];
 
-const buildMasks = (buffers: PixelBuffers, width: number, height: number, lighting: LightingProfile): StageMasks => {
-  const length = width * height;
-  const blueCoreMask = new Uint8Array(length);
-  const blueSupportMask = new Uint8Array(length);
-  const labelMaskRaw = new Uint8Array(length);
-  const skinMask = new Uint8Array(length);
-  const brightMin = clamp(
-    Math.max(LABEL_BRIGHT_MIN_FLOOR, Math.min(LABEL_BRIGHT_MIN_DEFAULT, buffers.p70MinChannel)),
-    0,
-    1
-  );
-  const neutralSpread =
-    lighting.frameLighting === "very-dim"
-      ? LABEL_NEUTRAL_SPREAD_MAX * 1.22
-      : lighting.frameLighting === "dim"
-        ? LABEL_NEUTRAL_SPREAD_MAX * 1.1
-        : LABEL_NEUTRAL_SPREAD_MAX;
+    const maxChannel = Math.max(red, green, blue);
+    const minChannel = Math.min(red, green, blue);
+    const spread = maxChannel - minChannel;
+    const value = maxChannel / 255;
+    const saturation = maxChannel === 0 ? 0 : spread / maxChannel;
 
-  for (let index = 0; index < length; index += 1) {
-    const hue = buffers.hue[index];
-    const saturation = buffers.saturation[index];
-    const value = buffers.value[index];
-    const normalizedValue = buffers.normalizedValue[index];
-    const minChannel = buffers.minChannel[index];
-    const channelSpread = buffers.channelSpread[index];
+    const whitenessScore = value * (1 - saturation) * ((255 - spread) / 255);
+    whiteness[index] = whitenessScore;
 
-    const isBlueCore =
-      hueInRange(hue, BLUE_HUE_CORE_MIN, BLUE_HUE_CORE_MAX) &&
-      saturation >= BLUE_SAT_CORE_MIN &&
-      normalizedValue >= lighting.blueValueMinEffective;
-    blueCoreMask[index] = isBlueCore ? 1 : 0;
-
-    const isBlueSupport =
-      hueInRange(hue, lighting.blueHueSupportMinEffective, lighting.blueHueSupportMaxEffective) &&
-      saturation >= BLUE_SAT_SUPPORT_MIN &&
-      normalizedValue >= lighting.blueValueMinEffective;
-    blueSupportMask[index] = isBlueSupport ? 1 : 0;
-
-    const isLabelLike =
-      minChannel >= brightMin &&
-      channelSpread <= neutralSpread &&
-      saturation <= LABEL_SATURATION_MAX &&
-      normalizedValue >= lighting.labelValueMinEffective * 0.72;
-    labelMaskRaw[index] = isLabelLike ? 1 : 0;
-
-    const isSkinLike =
-      (hueInRange(hue, SKIN_HUE_A_MIN, SKIN_HUE_A_MAX) || hueInRange(hue, SKIN_HUE_B_MIN, SKIN_HUE_B_MAX)) &&
-      saturation >= SKIN_SAT_MIN &&
-      saturation <= SKIN_SAT_MAX &&
-      value >= SKIN_VALUE_MIN &&
-      value <= SKIN_VALUE_MAX;
-    skinMask[index] = isSkinLike ? 1 : 0;
-  }
-
-  const blueMaskRaw = new Uint8Array(length);
-  for (let index = 0; index < length; index += 1) {
-    blueMaskRaw[index] =
-      skinMask[index] === 0 && (blueCoreMask[index] === 1 || blueSupportMask[index] === 1) ? 1 : 0;
-  }
-
-  const blueMask = close3x3(open3x3(blueMaskRaw, width, height), width, height);
-  const labelMask = close3x3(open3x3(labelMaskRaw, width, height), width, height);
-  const edgeMask = computeEdgeMask(buffers.luminance, width, height);
-  const edgeOnlyMask = close3x3(edgeMask, width, height);
-  const blueNeighborhoodMask = dilate3x3(dilate3x3(blueMask, width, height), width, height);
-
-  return {
-    blueMask,
-    labelMask,
-    skinMask,
-    edgeMask,
-    edgeOnlyMask,
-    blueNeighborhoodMask
-  };
-};
-
-const findComponents = (mask: Uint8Array, width: number, height: number, minAreaRatio: number): ConnectedComponent[] => {
-  const visited = new Uint8Array(mask.length);
-  const queueX = new Int32Array(mask.length);
-  const queueY = new Int32Array(mask.length);
-  const minArea = Math.max(1, Math.round(width * height * minAreaRatio));
-  const components: ConnectedComponent[] = [];
-
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const startIndex = y * width + x;
-      if (mask[startIndex] === 0 || visited[startIndex] === 1) {
-        continue;
-      }
-
-      let head = 0;
-      let tail = 0;
-      queueX[tail] = x;
-      queueY[tail] = y;
-      tail += 1;
-      visited[startIndex] = 1;
-
-      const pixels: number[] = [];
-      let area = 0;
-      let minX = x;
-      let minY = y;
-      let maxX = x;
-      let maxY = y;
-
-      while (head < tail) {
-        const currentX = queueX[head];
-        const currentY = queueY[head];
-        head += 1;
-
-        const index = currentY * width + currentX;
-        pixels.push(index);
-        area += 1;
-
-        if (currentX < minX) minX = currentX;
-        if (currentY < minY) minY = currentY;
-        if (currentX > maxX) maxX = currentX;
-        if (currentY > maxY) maxY = currentY;
-
-        const neighbors = [
-          [currentX + 1, currentY],
-          [currentX - 1, currentY],
-          [currentX, currentY + 1],
-          [currentX, currentY - 1]
-        ];
-
-        for (const [nextX, nextY] of neighbors) {
-          if (nextX < 0 || nextY < 0 || nextX >= width || nextY >= height) {
-            continue;
-          }
-
-          const nextIndex = nextY * width + nextX;
-          if (visited[nextIndex] === 1 || mask[nextIndex] === 0) {
-            continue;
-          }
-
-          visited[nextIndex] = 1;
-          queueX[tail] = nextX;
-          queueY[tail] = nextY;
-          tail += 1;
-        }
-      }
-
-      if (area < minArea) {
-        continue;
-      }
-
-      components.push({
-        minX,
-        minY,
-        maxX,
-        maxY,
-        area,
-        pixels
-      });
+    if (
+      value >= profile.minValue &&
+      saturation <= profile.maxSaturation &&
+      spread <= profile.maxSpread &&
+      whitenessScore >= profile.minWhiteness
+    ) {
+      whiteMask[index] = 1;
     }
   }
 
-  return components;
-};
+  const cleanedMask = open3x3(close3x3(whiteMask, sampleWidth, sampleHeight), sampleWidth, sampleHeight);
+  const visited = new Uint8Array(frameArea);
+  const candidates: ComponentCandidate[] = [];
 
-const getAspect = (component: ConnectedComponent): number => {
-  const width = component.maxX - component.minX + 1;
-  const height = component.maxY - component.minY + 1;
-  if (width <= 0 || height <= 0) {
-    return 0;
-  }
-  return width >= height ? width / height : height / width;
-};
-
-const scoreTicketCandidate = (
-  component: ConnectedComponent,
-  masks: StageMasks,
-  width: number,
-  height: number,
-  lighting: LightingProfile
-): TicketCandidate => {
-  const imageArea = width * height;
-  const boxWidth = component.maxX - component.minX + 1;
-  const boxHeight = component.maxY - component.minY + 1;
-  const boxArea = boxWidth * boxHeight;
-  const aspect = getAspect(component);
-
-  let blueHits = 0;
-  let skinHits = 0;
-  let edgeHits = 0;
-
-  for (const index of component.pixels) {
-    if (masks.blueMask[index] === 1) {
-      blueHits += 1;
-    }
-    if (masks.skinMask[index] === 1) {
-      skinHits += 1;
-    }
-    if (masks.edgeMask[index] === 1) {
-      edgeHits += 1;
-    }
-  }
-
-  const areaRatio = component.area / imageArea;
-  const fillRatio = component.area / Math.max(1, boxArea);
-  const blueRatio = blueHits / Math.max(1, component.area);
-  const skinRatio = skinHits / Math.max(1, component.area);
-  const edgeRatio = edgeHits / Math.max(1, component.area);
-
-  const fillBaseline = lighting.frameLighting === "normal" ? 0.25 : lighting.frameLighting === "dim" ? 0.18 : 0.12;
-  const areaScore = clamp((areaRatio - MIN_TICKET_AREA_RATIO) / 0.32, 0, 1);
-  const fillScore = clamp((fillRatio - fillBaseline) / 0.66, 0, 1);
-  const aspectScore = clamp(1 - Math.abs(aspect - TICKET_TARGET_ASPECT) / 1.45, 0, 1);
-
-  let score =
-    areaScore * 0.2 +
-    aspectScore * 0.25 +
-    fillScore * 0.15 +
-    clamp(blueRatio / 0.38, 0, 1) * 0.3 +
-    clamp(edgeRatio / 0.45, 0, 1) * 0.1;
-
-  if (aspect < TICKET_ASPECT_MIN || aspect > TICKET_ASPECT_MAX) {
-    score *= lighting.frameLighting === "normal" ? 0.62 : lighting.frameLighting === "dim" ? 0.7 : 0.78;
-  }
-
-  if (skinRatio > 0.2) {
-    const skinPenaltyFactor = lighting.frameLighting === "normal" ? 1.4 : lighting.frameLighting === "dim" ? 1.1 : 0.9;
-    score -= Math.min(0.4, (skinRatio - 0.2) * skinPenaltyFactor);
-  }
-
-  score = clamp(score, 0, 1);
-
-  return {
-    component,
-    score,
-    blueRatio,
-    skinRatio,
-    edgeRatio,
-    aspect
-  };
-};
-
-const scoreLabelCandidate = (
-  component: ConnectedComponent,
-  masks: StageMasks,
-  buffers: PixelBuffers,
-  width: number,
-  height: number,
-  ticketCandidate: TicketCandidate | null,
-  searchWindow: SearchWindow,
-  lighting: LightingProfile
-): LabelCandidate => {
-  const boxWidth = component.maxX - component.minX + 1;
-  const boxHeight = component.maxY - component.minY + 1;
-  const boxArea = boxWidth * boxHeight;
-
-  let adjacencyHits = 0;
-  let edgeHits = 0;
-  let insideBlueHits = 0;
-  let saturationSum = 0;
-  let normalizedValueSum = 0;
-
-  for (const index of component.pixels) {
-    if (masks.blueNeighborhoodMask[index] === 1) {
-      adjacencyHits += 1;
-    }
-    if (masks.edgeMask[index] === 1) {
-      edgeHits += 1;
-    }
-    if (masks.blueMask[index] === 1) {
-      insideBlueHits += 1;
-    }
-    saturationSum += buffers.saturation[index];
-    normalizedValueSum += buffers.normalizedValue[index];
-  }
-
-  const area = Math.max(1, component.area);
-  const adjacencyRatio = adjacencyHits / area;
-  const edgeDensity = edgeHits / area;
-  const insideBlueRatio = insideBlueHits / area;
-  const fillRatio = component.area / Math.max(1, boxArea);
-  const meanSaturation = saturationSum / area;
-  const meanValue = normalizedValueSum / area;
-  const aspectRatio = boxWidth / Math.max(1, boxHeight);
-
-  let sizeScore = 0;
-  if (ticketCandidate) {
-    const labelAreaRatioToTicket = component.area / Math.max(1, ticketCandidate.component.area);
-    if (labelAreaRatioToTicket >= 0.03 && labelAreaRatioToTicket <= 0.45) {
-      sizeScore = 1;
-    } else {
-      const distance =
-        labelAreaRatioToTicket < 0.03
-          ? Math.abs(labelAreaRatioToTicket - 0.03)
-          : Math.abs(labelAreaRatioToTicket - 0.45);
-      sizeScore = clamp(1 - distance / 0.22, 0, 1);
-    }
-  } else {
-    const areaRatio = component.area / Math.max(1, width * height);
-    sizeScore = clamp(1 - Math.abs(areaRatio - 0.025) / 0.05, 0, 1);
-  }
-
-  const brightnessScore = clamp((meanValue - lighting.labelValueMinEffective) / (1 - lighting.labelValueMinEffective), 0, 1);
-  const saturationScore = clamp((LABEL_SATURATION_MAX - meanSaturation) / LABEL_SATURATION_MAX, 0, 1);
-  const rectangularityScore = clamp((fillRatio - 0.45) / 0.45, 0, 1);
-  const adjacencyScore = clamp((adjacencyRatio - 0.12) / 0.58, 0, 1);
-  const aspectScore =
-    aspectRatio >= LABEL_ASPECT_MIN && aspectRatio <= LABEL_ASPECT_MAX
-      ? 1
-      : clamp(
-          1 -
-            (aspectRatio < LABEL_ASPECT_MIN
-              ? (LABEL_ASPECT_MIN - aspectRatio) / LABEL_ASPECT_MIN
-              : (aspectRatio - LABEL_ASPECT_MAX) / LABEL_ASPECT_MAX),
-          0,
-          1
-        );
-  const edgeDensityScore = clamp((edgeDensity - 0.06) / 0.22, 0, 1);
-
-  const windowWidth = Math.max(1, searchWindow.maxX - searchWindow.minX);
-  const windowHeight = Math.max(1, searchWindow.maxY - searchWindow.minY);
-  const borderMargin = Math.max(1, Math.round(Math.min(windowWidth, windowHeight) * LABEL_BORDER_MARGIN_RATIO));
-  let touchedSides = 0;
-  if (component.minX <= searchWindow.minX + borderMargin) {
-    touchedSides += 1;
-  }
-  if (component.maxX >= searchWindow.maxX - borderMargin - 1) {
-    touchedSides += 1;
-  }
-  if (component.minY <= searchWindow.minY + borderMargin) {
-    touchedSides += 1;
-  }
-  if (component.maxY >= searchWindow.maxY - borderMargin - 1) {
-    touchedSides += 1;
-  }
-  const borderTouchRatio = touchedSides / 4;
-
-  let score =
-    brightnessScore * 0.22 +
-    saturationScore * 0.11 +
-    rectangularityScore * 0.2 +
-    adjacencyScore * 0.18 +
-    aspectScore * 0.15 +
-    edgeDensityScore * 0.14;
-
-  score *= 0.45 + sizeScore * 0.55;
-
-  const adjacencyFloor = lighting.frameLighting === "normal" ? 0.15 : lighting.frameLighting === "dim" ? 0.1 : 0.08;
-  if (ticketCandidate && adjacencyRatio < adjacencyFloor) {
-    score *= 0.65;
-  }
-
-  if (insideBlueRatio > LABEL_BLUE_INSIDE_MAX) {
-    const blueInsidePenalty = clamp(1 - (insideBlueRatio - LABEL_BLUE_INSIDE_MAX) * 2.4, 0.18, 1);
-    score *= blueInsidePenalty;
-  }
-
-  if (borderTouchRatio > 0) {
-    const borderPenalty = clamp(1 - borderTouchRatio * 0.88, 0.2, 1);
-    score *= borderPenalty;
-  }
-
-  score = clamp(score, 0, 1);
-
-  return {
-    component,
-    score,
-    adjacencyRatio,
-    fillRatio,
-    meanSaturation,
-    meanValue,
-    insideBlueRatio,
-    edgeDensity,
-    borderTouchRatio,
-    aspectRatio
-  };
-};
-
-const scoreEdgeCandidate = (
-  component: ConnectedComponent,
-  masks: StageMasks,
-  width: number,
-  height: number
-): EdgeCandidate => {
-  const imageArea = width * height;
-  const boxWidth = component.maxX - component.minX + 1;
-  const boxHeight = component.maxY - component.minY + 1;
-  const boxArea = boxWidth * boxHeight;
-
-  let edgeHits = 0;
-  let skinHits = 0;
-  for (const index of component.pixels) {
-    if (masks.edgeMask[index] === 1) {
-      edgeHits += 1;
-    }
-    if (masks.skinMask[index] === 1) {
-      skinHits += 1;
-    }
-  }
-
-  const areaRatio = component.area / imageArea;
-  const fillRatio = component.area / Math.max(1, boxArea);
-  const aspect = getAspect(component);
-  const edgeRatio = edgeHits / Math.max(1, component.area);
-  const skinRatio = skinHits / Math.max(1, component.area);
-
-  const areaScore = clamp((areaRatio - MIN_EDGE_AREA_RATIO) / 0.32, 0, 1);
-  const aspectScore = clamp(1 - Math.abs(aspect - TICKET_TARGET_ASPECT) / 1.8, 0, 1);
-  const fillScore = clamp((fillRatio - 0.12) / 0.55, 0, 1);
-
-  let score =
-    areaScore * 0.25 +
-    aspectScore * 0.35 +
-    fillScore * 0.2 +
-    clamp(edgeRatio / 0.55, 0, 1) * 0.2;
-
-  if (skinRatio > 0.2) {
-    score -= Math.min(0.35, (skinRatio - 0.2) * 1.2);
-  }
-
-  score = clamp(score, 0, 1);
-
-  return {
-    component,
-    score,
-    skinRatio,
-    edgeRatio
-  };
-};
-
-const pickBestTicketCandidate = (
-  masks: StageMasks,
-  width: number,
-  height: number,
-  lighting: LightingProfile
-): TicketCandidate | null => {
-  const components = findComponents(masks.blueMask, width, height, MIN_TICKET_AREA_RATIO);
-  let best: TicketCandidate | null = null;
-
-  for (const component of components) {
-    const candidate = scoreTicketCandidate(component, masks, width, height, lighting);
-    if (!best || candidate.score > best.score) {
-      best = candidate;
-    }
-  }
-
-  return best;
-};
-
-const buildSearchWindow = (
-  width: number,
-  height: number,
-  ticketCandidate: TicketCandidate | null
-): { focused: SearchWindow; full: SearchWindow } => {
-  const full: SearchWindow = {
-    minX: 0,
-    minY: 0,
-    maxX: width,
-    maxY: height
-  };
-
-  if (!ticketCandidate) {
-    return { focused: full, full };
-  }
-
-  const ticketBox = componentToBox(ticketCandidate.component);
-  const marginX = Math.max(5, Math.round(ticketBox.width * 0.12));
-  const marginY = Math.max(5, Math.round(ticketBox.height * 0.14));
-  const focused: SearchWindow = {
-    minX: clamp(ticketBox.x - marginX, 0, width - 1),
-    minY: clamp(ticketBox.y - marginY, 0, height - 1),
-    maxX: clamp(ticketBox.x + ticketBox.width + marginX, 1, width),
-    maxY: clamp(ticketBox.y + ticketBox.height + marginY, 1, height)
-  };
-
-  return { focused, full };
-};
-
-const pickBestLabelCandidateInWindow = (
-  masks: StageMasks,
-  buffers: PixelBuffers,
-  width: number,
-  height: number,
-  ticketCandidate: TicketCandidate | null,
-  searchWindow: SearchWindow,
-  lighting: LightingProfile
-): LabelCandidate | null => {
-  const ticketBox = ticketCandidate ? componentToBox(ticketCandidate.component) : null;
-  const length = width * height;
-  const filteredLabelMask = new Uint8Array(length);
-
-  for (let y = searchWindow.minY; y < searchWindow.maxY; y += 1) {
-    for (let x = searchWindow.minX; x < searchWindow.maxX; x += 1) {
-      const index = y * width + x;
-      filteredLabelMask[index] = masks.labelMask[index] === 1 ? 1 : 0;
-    }
-  }
-
-  const labelCandidates = findComponents(filteredLabelMask, width, height, MIN_LABEL_AREA_RATIO);
-  let best: LabelCandidate | null = null;
-
-  for (const component of labelCandidates) {
-    if (ticketBox) {
-      const insideRatio = computeComponentInsideRatio(component, ticketBox);
-      if (insideRatio < LABEL_INSIDE_TICKET_MIN) {
-        continue;
-      }
-    }
-
-    const scored = scoreLabelCandidate(component, masks, buffers, width, height, ticketCandidate, searchWindow, lighting);
-    if (scored.insideBlueRatio > LABEL_BLUE_INSIDE_HARD_MAX) {
+  for (let start = 0; start < frameArea; start += 1) {
+    if (cleanedMask[start] === 0 || visited[start] === 1) {
       continue;
     }
 
-    if (!best || scored.score > best.score) {
-      best = scored;
+    const stack: number[] = [start];
+    visited[start] = 1;
+
+    let minX = sampleWidth - 1;
+    let minY = sampleHeight - 1;
+    let maxX = 0;
+    let maxY = 0;
+    let pixelCount = 0;
+    let whitenessSum = 0;
+
+    while (stack.length > 0) {
+      const index = stack.pop() as number;
+      const x = index % sampleWidth;
+      const y = (index - x) / sampleWidth;
+
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+      pixelCount += 1;
+      whitenessSum += whiteness[index];
+
+      const left = x > 0 ? index - 1 : -1;
+      const right = x + 1 < sampleWidth ? index + 1 : -1;
+      const up = y > 0 ? index - sampleWidth : -1;
+      const down = y + 1 < sampleHeight ? index + sampleWidth : -1;
+
+      if (left >= 0 && cleanedMask[left] === 1 && visited[left] === 0) {
+        visited[left] = 1;
+        stack.push(left);
+      }
+      if (right >= 0 && cleanedMask[right] === 1 && visited[right] === 0) {
+        visited[right] = 1;
+        stack.push(right);
+      }
+      if (up >= 0 && cleanedMask[up] === 1 && visited[up] === 0) {
+        visited[up] = 1;
+        stack.push(up);
+      }
+      if (down >= 0 && cleanedMask[down] === 1 && visited[down] === 0) {
+        visited[down] = 1;
+        stack.push(down);
+      }
     }
-  }
 
-  return best;
-};
-
-const pickBestLabelCandidate = (
-  masks: StageMasks,
-  buffers: PixelBuffers,
-  width: number,
-  height: number,
-  ticketCandidate: TicketCandidate | null,
-  lighting: LightingProfile
-): LabelSearchResult => {
-  const windows = buildSearchWindow(width, height, ticketCandidate);
-  const focused = pickBestLabelCandidateInWindow(
-    masks,
-    buffers,
-    width,
-    height,
-    ticketCandidate,
-    windows.focused,
-    lighting
-  );
-
-  const shouldSearchFullFrame =
-    !focused || focused.score < 0.38 || focused.borderTouchRatio >= 0.25 || focused.insideBlueRatio > LABEL_BLUE_INSIDE_MAX;
-
-  if (!shouldSearchFullFrame) {
-    return {
-      candidate: focused,
-      searchedFullFrame: false
-    };
-  }
-
-  const fullFrame = pickBestLabelCandidateInWindow(
-    masks,
-    buffers,
-    width,
-    height,
-    ticketCandidate,
-    windows.full,
-    lighting
-  );
-
-  if (!focused) {
-    return {
-      candidate: fullFrame,
-      searchedFullFrame: true
-    };
-  }
-
-  if (!fullFrame) {
-    return {
-      candidate: focused,
-      searchedFullFrame: true
-    };
-  }
-
-  return {
-    candidate: fullFrame.score > focused.score * 1.04 ? fullFrame : focused,
-    searchedFullFrame: true
-  };
-};
-
-const pickBestEdgeCandidate = (masks: StageMasks, width: number, height: number): EdgeCandidate | null => {
-  const components = findComponents(masks.edgeOnlyMask, width, height, MIN_EDGE_AREA_RATIO);
-  let best: EdgeCandidate | null = null;
-
-  for (const component of components) {
-    const candidate = scoreEdgeCandidate(component, masks, width, height);
-    if (!best || candidate.score > best.score) {
-      best = candidate;
+    if (pixelCount <= 0) {
+      continue;
     }
+
+    const width = maxX - minX + 1;
+    const height = maxY - minY + 1;
+    const bboxArea = width * height;
+    const areaRatio = bboxArea / frameArea;
+    const fillRatio = pixelCount / Math.max(1, bboxArea);
+    const aspectRatio = Math.max(width / Math.max(1, height), height / Math.max(1, width));
+    const touchesFrameEdge =
+      minX <= 1 || minY <= 1 || maxX >= sampleWidth - 2 || maxY >= sampleHeight - 2;
+
+    if (touchesFrameEdge) {
+      continue;
+    }
+    if (areaRatio < minAreaRatio || areaRatio > maxAreaRatio) {
+      continue;
+    }
+    if (fillRatio < MIN_FILL_RATIO) {
+      continue;
+    }
+    if (aspectRatio < MIN_ASPECT_RATIO || aspectRatio > MAX_ASPECT_RATIO) {
+      continue;
+    }
+
+    candidates.push({
+      box: {
+        x: minX,
+        y: minY,
+        width,
+        height
+      },
+      bboxArea,
+      areaRatio,
+      fillRatio,
+      whiteness: whitenessSum / pixelCount
+    });
   }
 
-  return best;
-};
+  if (candidates.length === 0) {
+    reasons.push("no-white-rectangle");
+    return buildFailureResult(reasons, profile.frameLighting, debugEnabled);
+  }
 
-const inferTicketFromLabel = (labelBox: TicketBoundingBox, width: number, height: number): TicketBoundingBox => {
-  const labelCenterX = labelBox.x + labelBox.width * 0.5;
-  const labelCenterY = labelBox.y + labelBox.height * 0.5;
+  const bestWhiteness = candidates.reduce((max, candidate) => Math.max(max, candidate.whiteness), 0);
+  const nearWhiteCandidates = candidates.filter((candidate) => candidate.whiteness >= bestWhiteness - WHITE_BAND);
 
-  const ticketWidth = Math.max(1, Math.round(labelBox.width * FALLBACK_TICKET_WIDTH_MULTIPLIER));
-  const ticketHeight = Math.max(1, Math.round(labelBox.height * FALLBACK_TICKET_HEIGHT_MULTIPLIER));
+  nearWhiteCandidates.sort((a, b) => {
+    if (a.bboxArea !== b.bboxArea) {
+      return a.bboxArea - b.bboxArea;
+    }
 
-  const inferred: TicketBoundingBox = {
-    x: Math.round(labelCenterX - ticketWidth * FALLBACK_TICKET_X_CENTER_OFFSET),
-    y: Math.round(labelCenterY - ticketHeight * FALLBACK_TICKET_Y_CENTER_OFFSET),
-    width: ticketWidth,
-    height: ticketHeight
-  };
+    if (a.whiteness !== b.whiteness) {
+      return b.whiteness - a.whiteness;
+    }
 
-  return clampBoxToBounds(inferred, width, height);
-};
-
-export const localizeTicketFromVideoFrame = (
-  video: HTMLVideoElement,
-  options: TicketLocalizerOptions = {}
-): TicketLocalizationResult => {
-  const emptyDebug = (reason: string): TicketLocalizationDebug => ({
-    stage: "blue-then-label",
-    reasons: [reason],
-    ticketScore: 0,
-    labelScore: 0,
-    edgeScore: 0,
-    blueRatio: 0,
-    labelRatio: 0,
-    skinRatio: 0,
-    edgeRatio: 0,
-    fallbackUsed: false,
-    confidenceBeforeCaps: 0,
-    confidenceAfterCaps: 0,
-    frameLighting: "normal",
-    blueValueMinEffective: 0.12,
-    labelValueMinEffective: 0.68,
-    labelInsideRatio: 0
+    return b.fillRatio - a.fillRatio;
   });
 
-  if (!workContext) {
-    return {
-      found: false,
-      ticketFound: false,
-      labelFound: false,
-      confidence: 0,
-      box: null,
-      ticketBox: null,
-      labelBox: null,
-      debug: options.debug ? emptyDebug("NO_WORK_CONTEXT") : undefined
-    };
-  }
-
-  const sourceWidth = video.videoWidth;
-  const sourceHeight = video.videoHeight;
-
-  if (sourceWidth <= 0 || sourceHeight <= 0) {
-    return {
-      found: false,
-      ticketFound: false,
-      labelFound: false,
-      confidence: 0,
-      box: null,
-      ticketBox: null,
-      labelBox: null,
-      debug: options.debug ? emptyDebug("VIDEO_DIMENSIONS_UNAVAILABLE") : undefined
-    };
-  }
-
-  const scale = Math.min(1, LOCALIZE_MAX_DIMENSION / Math.max(sourceWidth, sourceHeight));
-  const targetWidth = Math.max(1, Math.round(sourceWidth * scale));
-  const targetHeight = Math.max(1, Math.round(sourceHeight * scale));
-
-  workCanvas.width = targetWidth;
-  workCanvas.height = targetHeight;
-  workContext.drawImage(video, 0, 0, targetWidth, targetHeight);
-
-  const frame = workContext.getImageData(0, 0, targetWidth, targetHeight);
-  const buffers = buildPixelBuffers(frame.data, targetWidth, targetHeight);
-  const lighting = deriveLightingProfile(buffers.p90Value);
-  const masks = buildMasks(buffers, targetWidth, targetHeight, lighting);
-
-  const ticketCandidate = pickBestTicketCandidate(masks, targetWidth, targetHeight, lighting);
-  const labelSearch = pickBestLabelCandidate(masks, buffers, targetWidth, targetHeight, ticketCandidate, lighting);
-  const labelCandidate = labelSearch.candidate;
-
-  const minBlueSupportRatio = options.minBlueSupportRatio ?? MIN_BLUE_SUPPORT_RATIO;
-  const blueSupportRequired =
-    lighting.frameLighting === "normal"
-      ? minBlueSupportRatio
-      : lighting.frameLighting === "dim"
-        ? minBlueSupportRatio * 0.78
-        : minBlueSupportRatio * 0.62;
-  const ticketScorePass =
-    lighting.frameLighting === "normal"
-      ? MIN_TICKET_SCORE_PASS
-      : lighting.frameLighting === "dim"
-        ? MIN_TICKET_SCORE_PASS * 0.82
-        : MIN_TICKET_SCORE_PASS * 0.66;
-  const labelScorePass =
-    lighting.frameLighting === "normal"
-      ? MIN_LABEL_SCORE_PASS
-      : lighting.frameLighting === "dim"
-        ? MIN_LABEL_SCORE_PASS * 0.88
-        : MIN_LABEL_SCORE_PASS * 0.78;
-
-  let stage: TicketLocalizationDebug["stage"] = "blue-then-label";
-  const reasons: string[] = [];
-  let fallbackUsed = labelSearch.searchedFullFrame;
-
-  let ticketBoxScaled: TicketBoundingBox | null = ticketCandidate ? componentToBox(ticketCandidate.component) : null;
-  let labelBoxScaled: TicketBoundingBox | null = labelCandidate ? componentToBox(labelCandidate.component) : null;
-
-  let ticketScore = ticketCandidate?.score ?? 0;
-  let labelScore = labelCandidate?.score ?? 0;
-  let edgeScore = 0;
-  let blueRatio = ticketCandidate?.blueRatio ?? 0;
-  let skinRatio = ticketCandidate?.skinRatio ?? 0;
-  let edgeRatio = ticketCandidate?.edgeRatio ?? 0;
-  const labelRatio =
-    ticketCandidate && labelCandidate
-      ? labelCandidate.component.area / Math.max(1, ticketCandidate.component.area)
-      : 0;
-
-  let confidenceBeforeCaps = 0;
-  let confidence = 0;
-  let labelInsideRatio = 0;
-
-  if (lighting.frameLighting !== "normal") {
-    addReason(reasons, "DIM_LIGHT_BLUE_RELAXED");
-  }
-  if (labelSearch.searchedFullFrame) {
-    addReason(reasons, "LABEL_FULL_FRAME_SEARCH");
-  }
-
-  if (!ticketCandidate) {
-    addReason(reasons, "NO_BLUE_TICKET_CANDIDATE");
-  }
-  if (!labelCandidate) {
-    addReason(reasons, "NO_WHITE_LABEL_CANDIDATE");
-  }
-
-  let ticketFound = ticketBoxScaled !== null && ticketScore >= ticketScorePass;
-  if (ticketCandidate && ticketScore < ticketScorePass) {
-    addReason(reasons, "LOW_TICKET_SCORE");
-  }
-
-  if (ticketCandidate && blueRatio < blueSupportRequired) {
-    addReason(reasons, "LOW_BLUE_RATIO");
-    if (ticketFound && blueRatio < blueSupportRequired * 0.35) {
-      ticketFound = false;
-      addReason(reasons, "LOW_BLUE_RATIO_HARD_FAIL");
-    }
-  }
-
-  let labelFound = labelBoxScaled !== null && labelScore >= labelScorePass;
-  if (labelCandidate && labelCandidate.borderTouchRatio >= 0.25) {
-    addReason(reasons, "LABEL_BORDER_TOUCH");
-  }
-  if (labelCandidate && labelCandidate.insideBlueRatio > LABEL_BLUE_INSIDE_MAX) {
-    addReason(reasons, "LABEL_BLUE_INSIDE_HIGH");
-  }
-  if (labelCandidate && labelCandidate.insideBlueRatio > LABEL_BLUE_INSIDE_HARD_MAX) {
-    labelFound = false;
-    labelScore = 0;
-    labelBoxScaled = null;
-    addReason(reasons, "LABEL_BLUE_INSIDE_HARD_FAIL");
-  }
-  if (labelCandidate && labelScore < labelScorePass) {
-    addReason(reasons, "LOW_LABEL_SCORE");
-  }
-  if (labelCandidate && labelCandidate.borderTouchRatio >= 0.5) {
-    labelFound = false;
-    labelBoxScaled = null;
-    addReason(reasons, "LABEL_BORDER_TOUCH_HARD_FAIL");
-  }
-  if (!ticketCandidate && labelCandidate) {
-    labelFound = false;
-    labelScore = 0;
-    labelBoxScaled = null;
-    addReason(reasons, "LABEL_REQUIRES_BLUE_TICKET");
-  }
-
-  if (ticketBoxScaled && labelBoxScaled) {
-    labelInsideRatio = computeLabelInsideRatio(labelBoxScaled, ticketBoxScaled);
-    if (labelInsideRatio < LABEL_INSIDE_TICKET_MIN) {
-      labelFound = false;
-      labelScore = 0;
-      labelBoxScaled = null;
-      addReason(reasons, "LABEL_OUTSIDE_TICKET");
-    }
-
-    if (labelFound && labelScore < labelScorePass) {
-      labelFound = false;
-      labelBoxScaled = null;
-      addReason(reasons, "LOW_LABEL_SCORE");
-    }
-  }
-
-  if (labelFound && labelBoxScaled && ticketBoxScaled && !ticketFound && labelInsideRatio >= LABEL_INSIDE_TICKET_MIN) {
-    stage = "label-fallback";
-    fallbackUsed = true;
-    ticketFound = true;
-    addReason(reasons, "LABEL_SUPPORTS_TICKET");
-  }
-
-  if (labelFound && ticketBoxScaled && labelBoxScaled) {
-    labelInsideRatio = computeLabelInsideRatio(labelBoxScaled, ticketBoxScaled);
-    if (labelInsideRatio < LABEL_INSIDE_TICKET_MIN) {
-      labelFound = false;
-      labelScore = 0;
-      labelBoxScaled = null;
-      addReason(reasons, "LABEL_OUTSIDE_TICKET");
-    }
-  }
-
-  if (ticketCandidate && labelCandidate) {
-    confidenceBeforeCaps = clamp(labelScore * 0.65 + ticketScore * 0.35, 0, 1);
-  } else if (labelCandidate) {
-    confidenceBeforeCaps = clamp(0.4 + labelScore * 0.5 + labelCandidate.adjacencyRatio * 0.15, 0, 1);
-  } else if (ticketCandidate) {
-    confidenceBeforeCaps = clamp(ticketScore * 0.8, 0, 1);
-  }
-  confidence = confidenceBeforeCaps;
-
-  if (ticketCandidate && blueRatio < blueSupportRequired) {
-    const blueFactor = clamp(blueRatio / Math.max(blueSupportRequired, 0.01), 0, 1);
-    confidence *= 0.45 + blueFactor * 0.55;
-  }
-  if (labelCandidate && labelCandidate.borderTouchRatio > 0) {
-    confidence *= clamp(1 - labelCandidate.borderTouchRatio * 0.7, 0.3, 1);
-  }
-  if (labelCandidate && labelCandidate.insideBlueRatio > LABEL_BLUE_INSIDE_MAX) {
-    confidence *= clamp(1 - (labelCandidate.insideBlueRatio - LABEL_BLUE_INSIDE_MAX) * 1.8, 0.25, 1);
-  }
-
-  if (ticketCandidate && skinRatio > SKIN_HEAVY_RATIO_THRESHOLD) {
-    const skinPenaltyScale = lighting.frameLighting === "normal" ? 1.6 : lighting.frameLighting === "dim" ? 1.2 : 1.0;
-    const skinFactor = clamp(1 - (skinRatio - SKIN_HEAVY_RATIO_THRESHOLD) * skinPenaltyScale, 0.15, 1);
-    confidence *= skinFactor;
-    addReason(reasons, "SKIN_OCCLUSION_HEAVY");
-  }
-  if (ticketCandidate && (ticketCandidate.aspect < TICKET_ASPECT_MIN || ticketCandidate.aspect > TICKET_ASPECT_MAX)) {
-    confidence *= 0.72;
-    addReason(reasons, "TICKET_ASPECT_OUT_OF_RANGE");
-  }
-
-  if (!labelFound) {
-    confidence *= 0.6;
-  }
-  confidence = clamp(confidence, 0, 1);
-
-  if (!ticketFound && ticketBoxScaled && labelFound && labelScore >= LABEL_FALLBACK_MIN_SCORE && labelBoxScaled) {
-    stage = "label-fallback";
-    fallbackUsed = true;
-    confidence = clamp(Math.max(confidence, 0.48 + labelScore * 0.28), 0, 1);
-    ticketFound = confidence >= LABEL_FALLBACK_PASS_THRESHOLD;
-    addReason(reasons, "LABEL_SUPPORTS_TICKET");
-
-    if (ticketFound) {
-      labelInsideRatio = computeLabelInsideRatio(labelBoxScaled, ticketBoxScaled);
-      if (labelInsideRatio < LABEL_INSIDE_TICKET_MIN) {
-        labelFound = false;
-        labelScore = 0;
-        labelBoxScaled = null;
-        addReason(reasons, "LABEL_OUTSIDE_TICKET");
-      }
-
-      labelFound = labelBoxScaled !== null && labelScore >= labelScorePass;
-      if (!labelFound) {
-        addReason(reasons, "LOW_LABEL_SCORE");
-      }
-    } else {
-      addReason(reasons, "LABEL_FALLBACK_CONFIDENCE_LOW");
-    }
-  } else if (!ticketFound && labelCandidate && labelScore < LABEL_FALLBACK_MIN_SCORE) {
-    addReason(reasons, "LABEL_FALLBACK_SCORE_LOW");
-  }
-
-  if (!ticketFound) {
-    const edgeCandidate = pickBestEdgeCandidate(masks, targetWidth, targetHeight);
-    if (edgeCandidate) {
-      stage = "edge-fallback";
-      fallbackUsed = true;
-      ticketBoxScaled = componentToBox(edgeCandidate.component);
-      edgeScore = edgeCandidate.score;
-      skinRatio = edgeCandidate.skinRatio;
-      edgeRatio = edgeCandidate.edgeRatio;
-
-      confidenceBeforeCaps = clamp(edgeScore * 0.7 + labelScore * 0.3, 0, 1);
-      confidence = clamp(confidenceBeforeCaps * 0.82, 0, 1);
-      ticketFound =
-        confidence >= EDGE_FALLBACK_PASS_THRESHOLD ||
-        edgeScore >= (lighting.frameLighting === "very-dim" ? 0.24 : 0.28);
-
-      if (!ticketFound) {
-        addReason(reasons, "EDGE_FALLBACK_CONFIDENCE_LOW");
-      }
-
-      if (ticketFound && labelBoxScaled && labelScore >= labelScorePass) {
-        labelInsideRatio = computeLabelInsideRatio(labelBoxScaled, ticketBoxScaled);
-        if (labelInsideRatio < LABEL_INSIDE_TICKET_MIN) {
-          labelFound = false;
-          labelScore = 0;
-          labelBoxScaled = null;
-          addReason(reasons, "LABEL_OUTSIDE_TICKET");
-        }
-
-        labelFound = labelBoxScaled !== null && labelScore >= labelScorePass;
-      }
-    } else {
-      addReason(reasons, "NO_EDGE_FALLBACK_CANDIDATE");
-    }
-  }
-
-  const found = ticketFound && labelFound;
-
-  if (ticketCandidate && labelCandidate && confidence < BLUE_LABEL_COMBINED_PASS_THRESHOLD) {
-    addReason(reasons, "LOW_COMBINED_CONFIDENCE");
-  }
-
-  if (!ticketFound) {
-    confidence = 0;
-    ticketBoxScaled = null;
-    labelBoxScaled = null;
-    labelFound = false;
-  } else if (!labelFound) {
-    labelBoxScaled = null;
-    if (confidence <= 0) {
-      confidence = clamp(ticketScore * 0.82, 0, 1);
-    }
-  }
-
-  const inverseScale = 1 / scale;
-  const ticketBox = ticketBoxScaled ? scaleBox(ticketBoxScaled, inverseScale) : null;
-  const labelBox = labelBoxScaled ? scaleBox(labelBoxScaled, inverseScale) : null;
-
-  const debug: TicketLocalizationDebug | undefined = options.debug
-    ? {
-        stage,
-        reasons,
-        ticketScore,
-        labelScore,
-        edgeScore,
-        blueRatio,
-        labelRatio,
-        skinRatio,
-        edgeRatio,
-        fallbackUsed,
-        confidenceBeforeCaps,
-        confidenceAfterCaps: confidence,
-        frameLighting: lighting.frameLighting,
-        blueValueMinEffective: lighting.blueValueMinEffective,
-        labelValueMinEffective: lighting.labelValueMinEffective,
-        labelInsideRatio
-      }
-    : undefined;
+  const selected = nearWhiteCandidates[0];
+  const selectedBox = toScaledBox(selected.box, scale, frameWidth, frameHeight);
+  const areaSpan = Math.max(0.0001, maxAreaRatio - minAreaRatio);
+  const areaPosition = clamp((selected.areaRatio - minAreaRatio) / areaSpan, 0, 1);
+  const smallAreaScore = 1 - areaPosition;
+  const confidence = clamp(0.55 * selected.whiteness + 0.3 * selected.fillRatio + 0.15 * smallAreaScore, 0, 1);
 
   return {
-    found,
-    ticketFound,
-    labelFound,
+    found: true,
+    ticketFound: true,
+    labelFound: true,
     confidence,
-    box: ticketBox,
-    ticketBox,
-    labelBox,
-    debug
+    box: selectedBox,
+    ticketBox: selectedBox,
+    labelBox: selectedBox,
+    debug: debugEnabled
+      ? {
+          stage: "white-rectangle",
+          reasons,
+          ticketScore: confidence,
+          labelScore: selected.whiteness,
+          frameLighting: profile.frameLighting,
+          candidateCount: nearWhiteCandidates.length,
+          selectedAreaRatio: selected.areaRatio,
+          selectedWhiteness: selected.whiteness,
+          selectedFillRatio: selected.fillRatio
+        }
+      : undefined
   };
 };
