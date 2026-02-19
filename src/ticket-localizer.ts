@@ -37,14 +37,6 @@ export type TicketLocalizerOptions = {
   maxAreaRatio?: number;
 };
 
-type ComponentCandidate = {
-  box: TicketBoundingBox;
-  bboxArea: number;
-  areaRatio: number;
-  fillRatio: number;
-  whiteness: number;
-};
-
 type ThresholdProfile = {
   frameLighting: FrameLighting;
   minValue: number;
@@ -53,13 +45,21 @@ type ThresholdProfile = {
   maxSpread: number;
 };
 
+type Candidate = {
+  box: TicketBoundingBox;
+  areaRatio: number;
+  fillRatio: number;
+  whiteness: number;
+  edgeTouchRatio: number;
+};
+
 const LOCALIZE_MAX_DIMENSION = 480;
-const DEFAULT_MIN_AREA_RATIO = 0.003;
-const DEFAULT_MAX_AREA_RATIO = 0.35;
-const MIN_FILL_RATIO = 0.58;
-const MIN_ASPECT_RATIO = 1.1;
-const MAX_ASPECT_RATIO = 8;
-const WHITE_BAND = 0.08;
+const DEFAULT_MIN_AREA_RATIO = 0.0012;
+const DEFAULT_MAX_AREA_RATIO = 0.95;
+const MIN_FILL_RATIO = 0.48;
+const MIN_ASPECT_RATIO = 1.0;
+const MAX_ASPECT_RATIO = 9.5;
+const WHITE_BAND = 0.12;
 
 const workCanvas = document.createElement("canvas");
 const workContext = workCanvas.getContext("2d", { willReadFrequently: true });
@@ -83,42 +83,38 @@ const percentileFromHistogram = (histogram: Uint32Array, total: number, percenti
   return 1;
 };
 
-const deriveThresholdProfile = (
-  p90Value: number,
-  optionMinWhiteness: number | undefined
-): ThresholdProfile => {
-  if (p90Value < 0.42) {
+const deriveThresholdProfile = (p90Value: number, minWhitenessOverride: number | undefined): ThresholdProfile => {
+  if (p90Value < 0.4) {
     return {
       frameLighting: "very-dim",
-      minValue: 0.45,
-      minWhiteness: optionMinWhiteness ?? 0.4,
-      maxSaturation: 0.34,
-      maxSpread: 85
+      minValue: 0.38,
+      minWhiteness: minWhitenessOverride ?? 0.3,
+      maxSaturation: 0.42,
+      maxSpread: 96
     };
   }
 
   if (p90Value < 0.58) {
     return {
       frameLighting: "dim",
-      minValue: 0.55,
-      minWhiteness: optionMinWhiteness ?? 0.5,
-      maxSaturation: 0.28,
-      maxSpread: 75
+      minValue: 0.48,
+      minWhiteness: minWhitenessOverride ?? 0.38,
+      maxSaturation: 0.34,
+      maxSpread: 88
     };
   }
 
   return {
     frameLighting: "normal",
-    minValue: 0.64,
-    minWhiteness: optionMinWhiteness ?? 0.58,
-    maxSaturation: 0.22,
-    maxSpread: 65
+    minValue: 0.56,
+    minWhiteness: minWhitenessOverride ?? 0.46,
+    maxSaturation: 0.28,
+    maxSpread: 80
   };
 };
 
 const dilate3x3 = (source: Uint8Array, width: number, height: number): Uint8Array => {
   const output = new Uint8Array(source.length);
-
   for (let y = 1; y < height - 1; y += 1) {
     for (let x = 1; x < width - 1; x += 1) {
       let hit = 0;
@@ -139,7 +135,6 @@ const dilate3x3 = (source: Uint8Array, width: number, height: number): Uint8Arra
 
 const erode3x3 = (source: Uint8Array, width: number, height: number): Uint8Array => {
   const output = new Uint8Array(source.length);
-
   for (let y = 1; y < height - 1; y += 1) {
     for (let x = 1; x < width - 1; x += 1) {
       let keep = 1;
@@ -164,12 +159,7 @@ const close3x3 = (source: Uint8Array, width: number, height: number): Uint8Array
 const open3x3 = (source: Uint8Array, width: number, height: number): Uint8Array =>
   dilate3x3(erode3x3(source, width, height), width, height);
 
-const toScaledBox = (
-  box: TicketBoundingBox,
-  scale: number,
-  frameWidth: number,
-  frameHeight: number
-): TicketBoundingBox => {
+const toFrameBox = (box: TicketBoundingBox, scale: number, frameWidth: number, frameHeight: number): TicketBoundingBox => {
   const x = clamp(Math.round(box.x / scale), 0, frameWidth - 1);
   const y = clamp(Math.round(box.y / scale), 0, frameHeight - 1);
   const width = Math.max(1, Math.round(box.width / scale));
@@ -177,18 +167,13 @@ const toScaledBox = (
   const right = clamp(x + width, x + 1, frameWidth);
   const bottom = clamp(y + height, y + 1, frameHeight);
 
-  return {
-    x,
-    y,
-    width: Math.max(1, right - x),
-    height: Math.max(1, bottom - y)
-  };
+  return { x, y, width: right - x, height: bottom - y };
 };
 
-const buildFailureResult = (
+const failureResult = (
   reasons: string[],
   frameLighting: FrameLighting,
-  debugEnabled: boolean
+  debug: boolean
 ): TicketLocalizationResult => ({
   found: false,
   ticketFound: false,
@@ -197,7 +182,7 @@ const buildFailureResult = (
   box: null,
   ticketBox: null,
   labelBox: null,
-  debug: debugEnabled
+  debug: debug
     ? {
         stage: "white-rectangle",
         reasons,
@@ -218,206 +203,201 @@ export const localizeTicketFromVideoFrame = (
 ): TicketLocalizationResult => {
   const frameWidth = sourceVideo.videoWidth;
   const frameHeight = sourceVideo.videoHeight;
+  const debug = options.debug === true;
   const reasons: string[] = [];
-  const debugEnabled = options.debug === true;
 
   if (!workContext || frameWidth <= 0 || frameHeight <= 0) {
     reasons.push("frame-unavailable");
-    return buildFailureResult(reasons, "normal", debugEnabled);
+    return failureResult(reasons, "normal", debug);
   }
 
   const scale = Math.min(1, LOCALIZE_MAX_DIMENSION / Math.max(frameWidth, frameHeight));
-  const sampleWidth = Math.max(1, Math.round(frameWidth * scale));
-  const sampleHeight = Math.max(1, Math.round(frameHeight * scale));
-  const frameArea = sampleWidth * sampleHeight;
+  const width = Math.max(1, Math.round(frameWidth * scale));
+  const height = Math.max(1, Math.round(frameHeight * scale));
+  const area = width * height;
 
-  workCanvas.width = sampleWidth;
-  workCanvas.height = sampleHeight;
-  workContext.drawImage(sourceVideo, 0, 0, sampleWidth, sampleHeight);
+  workCanvas.width = width;
+  workCanvas.height = height;
+  workContext.drawImage(sourceVideo, 0, 0, width, height);
 
-  const imageData = workContext.getImageData(0, 0, sampleWidth, sampleHeight);
-  const pixels = imageData.data;
-
-  const valueHistogram = new Uint32Array(256);
-  for (let index = 0; index < frameArea; index += 1) {
-    const offset = index * 4;
-    const red = pixels[offset];
-    const green = pixels[offset + 1];
-    const blue = pixels[offset + 2];
-    const maxChannel = Math.max(red, green, blue);
-    valueHistogram[maxChannel] += 1;
+  const pixels = workContext.getImageData(0, 0, width, height).data;
+  const histogram = new Uint32Array(256);
+  for (let i = 0; i < area; i += 1) {
+    const offset = i * 4;
+    const maxCh = Math.max(pixels[offset], pixels[offset + 1], pixels[offset + 2]);
+    histogram[maxCh] += 1;
   }
 
-  const p90Value = percentileFromHistogram(valueHistogram, frameArea, 0.9);
+  const p90Value = percentileFromHistogram(histogram, area, 0.9);
   const profile = deriveThresholdProfile(p90Value, options.minWhiteness);
   const minAreaRatio = options.minAreaRatio ?? DEFAULT_MIN_AREA_RATIO;
   const maxAreaRatio = options.maxAreaRatio ?? DEFAULT_MAX_AREA_RATIO;
 
-  const whiteness = new Float32Array(frameArea);
-  const whiteMask = new Uint8Array(frameArea);
+  const whitenessMap = new Float32Array(area);
+  const mask = new Uint8Array(area);
 
-  for (let index = 0; index < frameArea; index += 1) {
-    const offset = index * 4;
+  for (let i = 0; i < area; i += 1) {
+    const offset = i * 4;
     const red = pixels[offset];
     const green = pixels[offset + 1];
     const blue = pixels[offset + 2];
+    const maxCh = Math.max(red, green, blue);
+    const minCh = Math.min(red, green, blue);
+    const spread = maxCh - minCh;
+    const value = maxCh / 255;
+    const saturation = maxCh === 0 ? 0 : spread / maxCh;
+    const whiteness = value * (1 - saturation) * ((255 - spread) / 255);
 
-    const maxChannel = Math.max(red, green, blue);
-    const minChannel = Math.min(red, green, blue);
-    const spread = maxChannel - minChannel;
-    const value = maxChannel / 255;
-    const saturation = maxChannel === 0 ? 0 : spread / maxChannel;
-
-    const whitenessScore = value * (1 - saturation) * ((255 - spread) / 255);
-    whiteness[index] = whitenessScore;
+    whitenessMap[i] = whiteness;
 
     if (
       value >= profile.minValue &&
       saturation <= profile.maxSaturation &&
       spread <= profile.maxSpread &&
-      whitenessScore >= profile.minWhiteness
+      whiteness >= profile.minWhiteness
     ) {
-      whiteMask[index] = 1;
+      mask[i] = 1;
     }
   }
 
-  const cleanedMask = open3x3(close3x3(whiteMask, sampleWidth, sampleHeight), sampleWidth, sampleHeight);
-  const visited = new Uint8Array(frameArea);
-  const candidates: ComponentCandidate[] = [];
+  const cleaned = open3x3(close3x3(mask, width, height), width, height);
+  const visited = new Uint8Array(area);
+  const candidates: Candidate[] = [];
 
-  for (let start = 0; start < frameArea; start += 1) {
-    if (cleanedMask[start] === 0 || visited[start] === 1) {
+  for (let start = 0; start < area; start += 1) {
+    if (cleaned[start] === 0 || visited[start] === 1) {
       continue;
     }
 
     const stack: number[] = [start];
     visited[start] = 1;
 
-    let minX = sampleWidth - 1;
-    let minY = sampleHeight - 1;
+    let minX = width - 1;
+    let minY = height - 1;
     let maxX = 0;
     let maxY = 0;
-    let pixelCount = 0;
-    let whitenessSum = 0;
+    let pixelsCount = 0;
+    let whiteSum = 0;
 
     while (stack.length > 0) {
-      const index = stack.pop() as number;
-      const x = index % sampleWidth;
-      const y = (index - x) / sampleWidth;
+      const idx = stack.pop() as number;
+      const x = idx % width;
+      const y = (idx - x) / width;
 
       minX = Math.min(minX, x);
       minY = Math.min(minY, y);
       maxX = Math.max(maxX, x);
       maxY = Math.max(maxY, y);
-      pixelCount += 1;
-      whitenessSum += whiteness[index];
+      pixelsCount += 1;
+      whiteSum += whitenessMap[idx];
 
-      const left = x > 0 ? index - 1 : -1;
-      const right = x + 1 < sampleWidth ? index + 1 : -1;
-      const up = y > 0 ? index - sampleWidth : -1;
-      const down = y + 1 < sampleHeight ? index + sampleWidth : -1;
+      const left = x > 0 ? idx - 1 : -1;
+      const right = x + 1 < width ? idx + 1 : -1;
+      const up = y > 0 ? idx - width : -1;
+      const down = y + 1 < height ? idx + width : -1;
 
-      if (left >= 0 && cleanedMask[left] === 1 && visited[left] === 0) {
+      if (left >= 0 && cleaned[left] === 1 && visited[left] === 0) {
         visited[left] = 1;
         stack.push(left);
       }
-      if (right >= 0 && cleanedMask[right] === 1 && visited[right] === 0) {
+      if (right >= 0 && cleaned[right] === 1 && visited[right] === 0) {
         visited[right] = 1;
         stack.push(right);
       }
-      if (up >= 0 && cleanedMask[up] === 1 && visited[up] === 0) {
+      if (up >= 0 && cleaned[up] === 1 && visited[up] === 0) {
         visited[up] = 1;
         stack.push(up);
       }
-      if (down >= 0 && cleanedMask[down] === 1 && visited[down] === 0) {
+      if (down >= 0 && cleaned[down] === 1 && visited[down] === 0) {
         visited[down] = 1;
         stack.push(down);
       }
     }
 
-    if (pixelCount <= 0) {
+    const boxWidth = maxX - minX + 1;
+    const boxHeight = maxY - minY + 1;
+    const boxArea = boxWidth * boxHeight;
+    if (boxArea <= 0 || pixelsCount <= 0) {
       continue;
     }
 
-    const width = maxX - minX + 1;
-    const height = maxY - minY + 1;
-    const bboxArea = width * height;
-    const areaRatio = bboxArea / frameArea;
-    const fillRatio = pixelCount / Math.max(1, bboxArea);
-    const aspectRatio = Math.max(width / Math.max(1, height), height / Math.max(1, width));
-    const touchesFrameEdge =
-      minX <= 1 || minY <= 1 || maxX >= sampleWidth - 2 || maxY >= sampleHeight - 2;
+    const areaRatio = boxArea / area;
+    const fillRatio = pixelsCount / boxArea;
+    const aspect = Math.max(boxWidth / Math.max(1, boxHeight), boxHeight / Math.max(1, boxWidth));
+    const edgeTouches =
+      (minX <= 1 ? 1 : 0) + (minY <= 1 ? 1 : 0) + (maxX >= width - 2 ? 1 : 0) + (maxY >= height - 2 ? 1 : 0);
+    const edgeTouchRatio = edgeTouches / 4;
 
-    if (touchesFrameEdge) {
-      continue;
-    }
     if (areaRatio < minAreaRatio || areaRatio > maxAreaRatio) {
       continue;
     }
     if (fillRatio < MIN_FILL_RATIO) {
       continue;
     }
-    if (aspectRatio < MIN_ASPECT_RATIO || aspectRatio > MAX_ASPECT_RATIO) {
+    if (aspect < MIN_ASPECT_RATIO || aspect > MAX_ASPECT_RATIO) {
       continue;
     }
 
     candidates.push({
-      box: {
-        x: minX,
-        y: minY,
-        width,
-        height
-      },
-      bboxArea,
+      box: { x: minX, y: minY, width: boxWidth, height: boxHeight },
       areaRatio,
       fillRatio,
-      whiteness: whitenessSum / pixelCount
+      whiteness: whiteSum / pixelsCount,
+      edgeTouchRatio
     });
   }
 
   if (candidates.length === 0) {
     reasons.push("no-white-rectangle");
-    return buildFailureResult(reasons, profile.frameLighting, debugEnabled);
+    return failureResult(reasons, profile.frameLighting, debug);
   }
 
-  const bestWhiteness = candidates.reduce((max, candidate) => Math.max(max, candidate.whiteness), 0);
-  const nearWhiteCandidates = candidates.filter((candidate) => candidate.whiteness >= bestWhiteness - WHITE_BAND);
+  const bestWhite = candidates.reduce((max, c) => Math.max(max, c.whiteness), 0);
+  const nearWhite = candidates.filter((c) => c.whiteness >= bestWhite - WHITE_BAND);
+  const pool = nearWhite.length > 0 ? nearWhite : candidates;
 
-  nearWhiteCandidates.sort((a, b) => {
-    if (a.bboxArea !== b.bboxArea) {
-      return a.bboxArea - b.bboxArea;
+  pool.sort((a, b) => {
+    if (a.edgeTouchRatio !== b.edgeTouchRatio) {
+      return a.edgeTouchRatio - b.edgeTouchRatio;
     }
-
+    if (a.areaRatio !== b.areaRatio) {
+      return a.areaRatio - b.areaRatio;
+    }
     if (a.whiteness !== b.whiteness) {
       return b.whiteness - a.whiteness;
     }
-
     return b.fillRatio - a.fillRatio;
   });
 
-  const selected = nearWhiteCandidates[0];
-  const selectedBox = toScaledBox(selected.box, scale, frameWidth, frameHeight);
+  const selected = pool[0];
   const areaSpan = Math.max(0.0001, maxAreaRatio - minAreaRatio);
-  const areaPosition = clamp((selected.areaRatio - minAreaRatio) / areaSpan, 0, 1);
-  const smallAreaScore = 1 - areaPosition;
-  const confidence = clamp(0.55 * selected.whiteness + 0.3 * selected.fillRatio + 0.15 * smallAreaScore, 0, 1);
+  const normalizedArea = clamp((selected.areaRatio - minAreaRatio) / areaSpan, 0, 1);
+  const confidence = clamp(
+    0.48 * selected.whiteness +
+      0.28 * selected.fillRatio +
+      0.16 * (1 - normalizedArea) +
+      0.08 * (1 - selected.edgeTouchRatio),
+    0,
+    1
+  );
+  const box = toFrameBox(selected.box, scale, frameWidth, frameHeight);
 
   return {
     found: true,
     ticketFound: true,
     labelFound: true,
     confidence,
-    box: selectedBox,
-    ticketBox: selectedBox,
-    labelBox: selectedBox,
-    debug: debugEnabled
+    box,
+    ticketBox: box,
+    labelBox: box,
+    debug: debug
       ? {
           stage: "white-rectangle",
           reasons,
           ticketScore: confidence,
           labelScore: selected.whiteness,
           frameLighting: profile.frameLighting,
-          candidateCount: nearWhiteCandidates.length,
+          candidateCount: pool.length,
           selectedAreaRatio: selected.areaRatio,
           selectedWhiteness: selected.whiteness,
           selectedFillRatio: selected.fillRatio
