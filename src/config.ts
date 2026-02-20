@@ -13,7 +13,7 @@ const DEFAULT_CONFIG: AppConfig = {
   scanTimeoutMs: 100000,
   retryIntervalMs: 100000,
   audioPlaybackRate: 1.0,
-  ocrBackendUrl: "https://aboutokms-yeawell.hf.space/ocr"
+  ocrBackendUrl: "/ocr"
 };
 
 const clamp01 = (value: number): number => {

@@ -50,6 +50,32 @@ npm run dev
 
 Open the local Vite URL in desktop Chrome.
 
+## Code Workflow (Scan Image -> Result on Page)
+1. User opens the app and clicks **Enable Camera**.
+2. Frontend (`src/main.ts`) runs `startPreview()`:
+   - requests camera permission with `getUserMedia`
+   - binds stream to `<video id="camera-preview">`
+   - updates UI state/message to indicate preview is active
+3. User frames the ticket and clicks **Capture & Send to OCR**.
+4. Frontend runs `captureAndSendOCR()`:
+   - captures current video frame via `captureFrameBlob()`
+   - encodes frame as JPEG blob
+   - posts multipart form data (`file=frame.jpg`) to `appConfig.ocrBackendUrl` (default `/ocr`)
+5. Vite dev server proxies `/ocr` to backend `http://127.0.0.1:8000/ocr` (`vite.config.ts`).
+6. Backend (`backend/main.py`) handles `POST /ocr` in `process_image()`:
+   - decodes uploaded image with OpenCV
+   - tries pink label detection (`detect_label_region`) and crops/resizes (`crop_and_resize_label`)
+   - runs PaddleOCR (`ocr.predict`)
+   - normalizes output to JSON lines: `[{ box, text, confidence }, ...]`
+7. Frontend receives OCR lines from backend (`fetchOCRItems()`), then parses them in `parseResultFromOCRItems()`:
+   - finds seat by regex `([0-9]{2}[A-Z]{2}[0-9]{2})`
+   - finds name candidates from non-label text lines containing alphabetic/CJK chars
+   - selects highest-confidence seat and name (excluding same line index as seat)
+8. Frontend updates UI via `updateOCRDisplay()`:
+   - shows parsed name/seat/confidence in **Parsed Result**
+   - shows raw OCR lines in **Raw OCR**
+   - updates app status (`Recognized` or `RetryNeeded`) based on confidence thresholds.
+
 ## Runtime Config (Optional)
 Set with Vite env vars:
 - `VITE_CONFIDENCE_THRESHOLD_NAME`
@@ -57,7 +83,7 @@ Set with Vite env vars:
 - `VITE_SCAN_TIMEOUT_MS`
 - `VITE_RETRY_INTERVAL_MS`
 - `VITE_AUDIO_PLAYBACK_RATE`
-- `VITE_OCR_BACKEND_URL` (recommended default: `http://127.0.0.1:8000/ocr`)
+- `VITE_OCR_BACKEND_URL` (recommended local dev value: `/ocr`)
 
 ## Notes
 - `SOFTWARE_SPEC.md` and `tasks.md` are updated for the backend-PaddleOCR workflow.
