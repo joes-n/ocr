@@ -28,13 +28,14 @@ from paddleocr import PaddleOCR
 # Use mobile (lightweight) models for speed.  The cropped label has large, clear
 # text so mobile-grade accuracy is more than sufficient.  Disable document
 # orientation classification and unwarping since we feed a pre-cropped label.
+# enable_mkldnn require paddlepaddle 3.2.2 to work. Will fail if paddlepaddle==3.3.0.
 ocr = PaddleOCR(
-    text_detection_model_name="PP-OCRv5_mobile_det",
-    text_recognition_model_name="PP-OCRv5_mobile_rec",
+    text_detection_model_name="PP-OCRv5_server_det",
+    text_recognition_model_name="PP-OCRv5_server_rec",
     use_doc_orientation_classify=False,
     use_doc_unwarping=False,
     use_textline_orientation=False,
-    enable_mkldnn=False,
+    enable_mkldnn=True,
 )
 logger.info("PaddleOCR initialized.")
 

@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-paddlepaddle
+paddlepaddle==3.2.2
 paddleocr
 python-multipart
 pydantic

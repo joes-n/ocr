@@ -120,6 +120,7 @@ const sampleCanvas = document.createElement("canvas");
 const sampleContext = sampleCanvas.getContext("2d");
 
 const seatRegex = /([0-9]{2}[A-Z]{2}[0-9]{2})/;
+const excludedNameWords = new Set(["sample", "graduate"]);
 
 const setAppState = (stateLabel: string): void => {
   appStateElement.innerHTML = `<strong>App state:</strong> ${stateLabel}`;
@@ -272,7 +273,9 @@ const parseResultFromOCRItems = (items: OCRItem[]): OCRResult | null => {
     const trimmed = item.text.trim();
     const hasNameLikeChars = /[A-Za-z\u4e00-\u9fff]/.test(trimmed);
     const looksLikeLabel = /(seat|座位|姓名|name)/i.test(trimmed);
-    if (trimmed.length >= 2 && hasNameLikeChars && !looksLikeLabel) {
+    const normalizedName = trimmed.toLowerCase();
+    const isExcludedNameWord = excludedNameWords.has(normalizedName);
+    if (trimmed.length >= 2 && hasNameLikeChars && !looksLikeLabel && !isExcludedNameWord) {
       nameCandidates.push({ text: trimmed, confidence: item.confidence, index });
     }
   }
