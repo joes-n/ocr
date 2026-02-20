@@ -1,0 +1,17 @@
+services:
+  paddleocr-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: paddleocr-backend
+    ports:
+      - "8000:8000"
+    environment:
+      FLAGS_allocator_strategy: auto_growth
+      PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK: "True"
+    volumes:
+      - paddle_models:/root/.paddlex
+    restart: unless-stopped
+
+volumes:
+  paddle_models:

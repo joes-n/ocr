@@ -10,10 +10,10 @@ export type AppConfig = {
 const DEFAULT_CONFIG: AppConfig = {
   confidenceThresholdName: 0.8,
   confidenceThresholdSeat: 0.9,
-  scanTimeoutMs: 1500,
-  retryIntervalMs: 300,
+  scanTimeoutMs: 100000,
+  retryIntervalMs: 100000,
   audioPlaybackRate: 1.0,
-  ocrBackendUrl: "http://127.0.0.1:8000/ocr"
+  ocrBackendUrl: "https://aboutokms-yeawell.hf.space/ocr"
 };
 
 const clamp01 = (value: number): number => {

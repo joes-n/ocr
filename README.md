@@ -21,6 +21,20 @@ python main.py
 
 Backend runs at `http://127.0.0.1:8000`.
 
+### 1a) Start backend with Docker
+From project root:
+```bash
+docker compose up --build paddleocr-backend
+```
+
+Backend runs at `http://127.0.0.1:8000`.
+
+Alternative (without Compose):
+```bash
+docker build -t paddleocr-backend ./backend
+docker run --rm -p 8000:8000 -e PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True paddleocr-backend
+```
+
 Quick backend check:
 ```bash
 curl -X POST http://127.0.0.1:8000/ocr \

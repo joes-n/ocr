@@ -12,15 +12,12 @@ if (!app) {
 const isChrome = /Chrome/.test(navigator.userAgent) && !/Edg|OPR/.test(navigator.userAgent);
 const hasCameraApi = Boolean(navigator.mediaDevices?.getUserMedia);
 const scanController = new ScanController("Ready");
-const frameSampleIntervalMs = appConfig.retryIntervalMs;
 
 let latestOCRResult: OCRResult | null = null;
 let latestOCRItems: OCRItem[] = [];
 let preferredFacingMode: "user" | "environment" = "environment";
 let selectedCameraId: string | null = null;
 let cameraStream: MediaStream | null = null;
-let samplingTimerId: number | null = null;
-let sampleCount = 0;
 let isOCRInFlight = false;
 
 const plannedAudioOutput: AudioResolution = {
@@ -42,13 +39,12 @@ app.innerHTML = `
       <p><strong>Seat confidence threshold:</strong> ${appConfig.confidenceThresholdSeat}</p>
       <p><strong>Scan timeout (ms):</strong> ${appConfig.scanTimeoutMs}</p>
       <p><strong>Retry interval (ms):</strong> ${appConfig.retryIntervalMs}</p>
-      <p><strong>Frame sample interval (ms):</strong> ${frameSampleIntervalMs}</p>
       <p><strong>Audio playback rate:</strong> ${appConfig.audioPlaybackRate}</p>
       <p id="app-state"><strong>App state:</strong> ${scanController.getState()}</p>
       <p id="ocr-summary"><strong>Latest OCR result:</strong> None</p>
       <p><strong>Queued audio segments:</strong> ${plannedAudioOutput.segments.length}</p>
       <p id="camera-message">Camera preview not started.</p>
-      <p id="sample-status"><strong>Sample loop:</strong> idle</p>
+      <p id="sample-status"><strong>OCR request:</strong> idle</p>
 
       <div class="camera-controls">
         <label for="camera-select"><strong>Camera:</strong></label>
@@ -77,6 +73,7 @@ app.innerHTML = `
 
       <div class="actions">
         <button id="start-camera-btn" type="button">Enable Camera</button>
+        <button id="capture-ocr-btn" type="button" disabled>Capture &amp; Send to OCR</button>
         <button id="stop-camera-btn" type="button" disabled>Stop Camera</button>
       </div>
     </section>
@@ -96,6 +93,7 @@ const ocrRawElement = document.querySelector<HTMLPreElement>("#ocr-raw");
 const cameraSelectElement = document.querySelector<HTMLSelectElement>("#camera-select");
 const switchFacingButton = document.querySelector<HTMLButtonElement>("#switch-facing-btn");
 const startCameraButton = document.querySelector<HTMLButtonElement>("#start-camera-btn");
+const captureOCRButton = document.querySelector<HTMLButtonElement>("#capture-ocr-btn");
 const stopCameraButton = document.querySelector<HTMLButtonElement>("#stop-camera-btn");
 
 if (
@@ -112,6 +110,7 @@ if (
   !cameraSelectElement ||
   !switchFacingButton ||
   !startCameraButton ||
+  !captureOCRButton ||
   !stopCameraButton
 ) {
   throw new Error("Missing app elements");
@@ -131,7 +130,7 @@ const setCameraMessage = (message: string): void => {
 };
 
 const setSampleStatus = (message: string): void => {
-  sampleStatusElement.innerHTML = `<strong>Sample loop:</strong> ${message}`;
+  sampleStatusElement.innerHTML = `<strong>OCR request:</strong> ${message}`;
 };
 
 const updateOCRDisplay = (items: OCRItem[], result: OCRResult | null): void => {
@@ -223,17 +222,6 @@ const getVideoConstraints = (): MediaTrackConstraints => {
     width: { ideal: 1280 },
     height: { ideal: 720 }
   };
-};
-
-const stopSampling = (): void => {
-  if (samplingTimerId !== null) {
-    window.clearInterval(samplingTimerId);
-    samplingTimerId = null;
-  }
-
-  sampleCount = 0;
-  isOCRInFlight = false;
-  setSampleStatus("idle");
 };
 
 const captureFrameBlob = async (): Promise<Blob | null> => {
@@ -335,25 +323,31 @@ const fetchOCRItems = async (blob: Blob): Promise<OCRItem[]> => {
       throw new Error(`OCR backend returned ${response.status}`);
     }
 
-    const data = (await response.json()) as { results?: OCRItem[] };
+    const data = (await response.json()) as { error?: string; results?: OCRItem[] };
+    if (typeof data.error === "string" && data.error.trim().length > 0) {
+      throw new Error(`OCR backend error: ${data.error}`);
+    }
     return Array.isArray(data.results) ? data.results : [];
   } finally {
     window.clearTimeout(timeoutId);
   }
 };
 
-const sampleFrame = async (): Promise<void> => {
+const captureAndSendOCR = async (): Promise<void> => {
   if (!cameraStream || isOCRInFlight) {
     return;
   }
 
   const blob = await captureFrameBlob();
   if (!blob) {
+    setCameraMessage("No video frame available yet. Wait for the preview to load and try again.");
     return;
   }
 
+  scanController.setState("Scanning");
   isOCRInFlight = true;
-  sampleCount += 1;
+  captureOCRButton.disabled = true;
+  setSampleStatus("sending");
 
   try {
     const items = await fetchOCRItems(blob);
@@ -372,27 +366,26 @@ const sampleFrame = async (): Promise<void> => {
     }
 
     updateOCRDisplay(items, parsed);
-    setSampleStatus(`running (${sampleCount} samples, ${items.length} OCR lines)`);
-    setCameraMessage("Camera preview active. Sending sampled frames to backend OCR.");
+    setSampleStatus(`completed (${items.length} OCR lines)`);
+    setCameraMessage("Capture sent to OCR.");
   } catch (error) {
     scanController.setState("RetryNeeded");
-    setCameraMessage(error instanceof Error ? `OCR request failed: ${error.message}` : "OCR request failed.");
-    setSampleStatus(`running (${sampleCount} samples, backend error)`);
+    if (error instanceof DOMException && error.name === "AbortError") {
+      setCameraMessage(`OCR request timed out after ${Math.max(500, appConfig.scanTimeoutMs)}ms.`);
+    } else {
+      setCameraMessage(error instanceof Error ? `OCR request failed: ${error.message}` : "OCR request failed.");
+    }
+    setSampleStatus("failed");
   } finally {
     isOCRInFlight = false;
+    captureOCRButton.disabled = !cameraStream;
   }
 };
 
-const startSampling = (): void => {
-  stopSampling();
-  setSampleStatus("starting");
-  samplingTimerId = window.setInterval(() => {
-    void sampleFrame();
-  }, frameSampleIntervalMs);
-};
-
 const stopPreview = (): void => {
-  stopSampling();
+  isOCRInFlight = false;
+  setSampleStatus("idle");
+  captureOCRButton.disabled = true;
 
   if (!cameraStream) {
     return;
@@ -450,12 +443,14 @@ const startPreview = async (): Promise<void> => {
     await populateCameraOptions();
 
     scanController.setState("Scanning");
-    setCameraMessage("Camera preview active. Waiting for OCR samples...");
-    startSampling();
+    setSampleStatus("idle");
+    setCameraMessage("Camera preview active. Press Capture to send one image to OCR.");
+    captureOCRButton.disabled = false;
     stopCameraButton.disabled = false;
     updateCameraControlsState(true);
   } catch (error) {
-    stopSampling();
+    setSampleStatus("idle");
+    captureOCRButton.disabled = true;
     scanController.setState("RetryNeeded");
     startCameraButton.disabled = false;
     updateCameraControlsState(hasCameraApi && isChrome);
@@ -470,6 +465,10 @@ void populateCameraOptions();
 
 startCameraButton.addEventListener("click", () => {
   void startPreview();
+});
+
+captureOCRButton.addEventListener("click", () => {
+  void captureAndSendOCR();
 });
 
 stopCameraButton.addEventListener("click", stopPreview);
