@@ -5,7 +5,7 @@ Desktop Chrome MVP for ticket name/seat recognition using a self-hosted PaddleOC
 ## Architecture
 - Frontend: Vite + TypeScript webcam app.
 - Backend: FastAPI + PaddleOCR (`POST /ocr`).
-- Flow: camera frame -> backend OCR -> frontend parser extracts `name` and `seat`.
+- Flow: camera frame -> backend hybrid OCR pipeline -> frontend parser extracts `name` and `seat`.
 
 ## Run
 
@@ -64,9 +64,12 @@ Open the local Vite URL in desktop Chrome.
 5. Vite dev server proxies `/ocr` to backend `http://127.0.0.1:8000/ocr` (`vite.config.ts`).
 6. Backend (`backend/main.py`) handles `POST /ocr` in `process_image()`:
    - decodes uploaded image with OpenCV
-   - tries pink label detection (`detect_label_region`) and crops/resizes (`crop_and_resize_label`)
-   - runs PaddleOCR (`ocr.predict`)
-   - normalizes output to JSON lines: `[{ box, text, confidence }, ...]`
+   - detects pink label region via HSV segmentation (`detect_label_region`)
+   - if label is found: crops label (`crop_label`), segments text lines (`segment_text_lines`), then runs rec-only OCR on each line (`TextRecognition`)
+   - if no label or no segmented lines: runs fallback full OCR pipeline (`PaddleOCR`) on the image/label
+   - normalizes output to JSON and returns:
+     - `results`: OCR lines `[{ box, text, confidence }, ...]`
+     - `profiling`: timing breakdown (`decode_ms`, `label_detect_ms`, `seg_ms`, `ocr_ms`, `total_ms`, `path`)
 7. Frontend receives OCR lines from backend (`fetchOCRItems()`), then parses them in `parseResultFromOCRItems()`:
    - finds seat by regex `([0-9]{2}[A-Z]{2}[0-9]{2})`
    - finds name candidates from non-label text lines containing alphabetic/CJK chars
@@ -74,7 +77,7 @@ Open the local Vite URL in desktop Chrome.
 8. Frontend updates UI via `updateOCRDisplay()`:
    - shows parsed name/seat/confidence in **Parsed Result**
    - shows raw OCR lines in **Raw OCR**
-   - updates app status (`Recognized` or `RetryNeeded`) based on confidence thresholds.
+   - updates app state based on parse/confidence (`Recognized`, `RetryNeeded`, or remains `Scanning` when parse fails).
 
 ## Runtime Config (Optional)
 Set with Vite env vars:
@@ -86,5 +89,5 @@ Set with Vite env vars:
 - `VITE_OCR_BACKEND_URL` (recommended local dev value: `/ocr`)
 
 ## Notes
-- `SOFTWARE_SPEC.md` and `tasks.md` are updated for the backend-PaddleOCR workflow.
 - Current backend implementation is in `backend/main.py`.
+- Cross-platform setup steps are documented in `SETUP.md`.
