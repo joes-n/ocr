@@ -1,6 +1,6 @@
 # SETUP
 
-This file is the current setup source of truth for this repository.
+This file is the setup reference for this repository.
 
 ## Setup Guide
 
@@ -16,6 +16,10 @@ This project has two parts:
 
 Optional:
 - Docker (only if you want to run backend in a container)
+
+Important:
+- This repo does not include a sample ticket image anymore.
+- For backend verification, replace the example image path below with a real local image on your machine.
 
 ## Linux
 
@@ -39,7 +43,7 @@ Open a second terminal:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/ocr \
-  -F "file=@/home/raner/proj_ocr/ticket_example.jpg"
+  -F "file=@/absolute/path/to/your-image.jpg"
 ```
 
 A JSON OCR response means backend is working.
@@ -54,7 +58,7 @@ npm install
 npm run dev
 ```
 
-Open the Vite URL shown in terminal (typically `http://127.0.0.1:5173`) in desktop Chrome.
+Open the Vite URL shown in terminal, typically `http://127.0.0.1:5173`, in desktop Chrome.
 
 ## Windows (PowerShell)
 
@@ -77,7 +81,7 @@ Backend should be available at `http://127.0.0.1:8000`.
 Open a second PowerShell window:
 
 ```powershell
-curl.exe -X POST http://127.0.0.1:8000/ocr -F "file=@C:\path\to\proj_ocr\ticket_example.jpg"
+curl.exe -X POST http://127.0.0.1:8000/ocr -F "file=@C:\path\to\your-image.jpg"
 ```
 
 A JSON OCR response means backend is working.
@@ -92,7 +96,7 @@ npm install
 npm run dev
 ```
 
-Open the Vite URL shown in terminal (typically `http://127.0.0.1:5173`) in desktop Chrome.
+Open the Vite URL shown in terminal, typically `http://127.0.0.1:5173`, in desktop Chrome.
 
 ## Windows (CMD)
 
@@ -108,13 +112,17 @@ set PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
 python main.py
 ```
 
+Backend should be available at `http://127.0.0.1:8000`.
+
 ### 2) Verify backend
 
 Open a second CMD window:
 
 ```bat
-curl -X POST http://127.0.0.1:8000/ocr -F "file=@C:\path\to\proj_ocr\ticket_example.jpg"
+curl -X POST http://127.0.0.1:8000/ocr -F "file=@C:\path\to\your-image.jpg"
 ```
+
+A JSON OCR response means backend is working.
 
 ### 3) Start frontend
 
@@ -126,7 +134,7 @@ npm install
 npm run dev
 ```
 
-Open the Vite URL shown in terminal (typically `http://127.0.0.1:5173`) in desktop Chrome.
+Open the Vite URL shown in terminal, typically `http://127.0.0.1:5173`, in desktop Chrome.
 
 ## Optional: Backend with Docker
 
@@ -142,8 +150,17 @@ Then run frontend with:
 npm run dev
 ```
 
+If Docker Compose cannot build images in your environment, you can use plain Docker instead:
+
+```bash
+docker build -t paddleocr-backend ./backend
+docker run --rm -p 8000:8000 -e PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True paddleocr-backend
+```
+
 ## Troubleshooting
 
 - If frontend cannot reach OCR, confirm backend is running on port `8000`.
 - If camera preview fails, use desktop Chrome and allow camera access.
 - If Python package installation fails on Windows, ensure you are using Python 3.11 and an activated virtual environment.
+- If backend verification fails, confirm the image path points to a real local file.
+- If `docker compose build` fails early, check whether your Docker install includes Compose build support or use the plain `docker build` fallback above.
