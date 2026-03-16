@@ -100,6 +100,11 @@ p {
   line-height: 1.35;
 }
 
+.ocr-diagnostics {
+  max-height: 320px;
+  font-size: 0.78rem;
+}
+
 button {
   width: fit-content;
   padding: 0.5rem 0.75rem;

@@ -1,7 +1,7 @@
 import "./styles.css";
 import { appConfig } from "./config";
 import { ScanController } from "./scan-controller";
-import type { AudioResolution, OCRItem, OCRResult } from "./types";
+import type { AudioResolution, OCRItem, OCRResponse, OCRResult } from "./types";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 
@@ -15,6 +15,7 @@ const scanController = new ScanController("Ready");
 
 let latestOCRResult: OCRResult | null = null;
 let latestOCRItems: OCRItem[] = [];
+let latestOCRDiagnostics = "{}";
 let preferredFacingMode: "user" | "environment" = "environment";
 let selectedCameraId: string | null = null;
 let cameraStream: MediaStream | null = null;
@@ -71,6 +72,16 @@ app.innerHTML = `
         <pre id="ocr-raw" class="ocr-raw">[]</pre>
       </div>
 
+      <div class="result-panel">
+        <h2>Diagnostics</h2>
+        <p id="backend-path"><strong>Backend path:</strong> -</p>
+        <p id="backend-request"><strong>Request ID:</strong> -</p>
+        <p id="backend-attempt"><strong>Attempt:</strong> -</p>
+        <p id="backend-pass"><strong>Selected pass:</strong> -</p>
+        <p id="parser-status"><strong>Parser status:</strong> -</p>
+        <pre id="ocr-diagnostics" class="ocr-raw ocr-diagnostics">${latestOCRDiagnostics}</pre>
+      </div>
+
       <div class="actions">
         <button id="start-camera-btn" type="button">Enable Camera</button>
         <button id="capture-ocr-btn" type="button" disabled>Capture &amp; Send to OCR</button>
@@ -90,6 +101,12 @@ const resultSeatElement = document.querySelector<HTMLParagraphElement>("#result-
 const resultConfidenceElement = document.querySelector<HTMLParagraphElement>("#result-confidence");
 const ocrCountElement = document.querySelector<HTMLParagraphElement>("#ocr-count");
 const ocrRawElement = document.querySelector<HTMLPreElement>("#ocr-raw");
+const backendPathElement = document.querySelector<HTMLParagraphElement>("#backend-path");
+const backendRequestElement = document.querySelector<HTMLParagraphElement>("#backend-request");
+const backendAttemptElement = document.querySelector<HTMLParagraphElement>("#backend-attempt");
+const backendPassElement = document.querySelector<HTMLParagraphElement>("#backend-pass");
+const parserStatusElement = document.querySelector<HTMLParagraphElement>("#parser-status");
+const ocrDiagnosticsElement = document.querySelector<HTMLPreElement>("#ocr-diagnostics");
 const cameraSelectElement = document.querySelector<HTMLSelectElement>("#camera-select");
 const switchFacingButton = document.querySelector<HTMLButtonElement>("#switch-facing-btn");
 const startCameraButton = document.querySelector<HTMLButtonElement>("#start-camera-btn");
@@ -107,6 +124,12 @@ if (
   !resultConfidenceElement ||
   !ocrCountElement ||
   !ocrRawElement ||
+  !backendPathElement ||
+  !backendRequestElement ||
+  !backendAttemptElement ||
+  !backendPassElement ||
+  !parserStatusElement ||
+  !ocrDiagnosticsElement ||
   !cameraSelectElement ||
   !switchFacingButton ||
   !startCameraButton ||
@@ -122,6 +145,16 @@ const sampleContext = sampleCanvas.getContext("2d");
 const seatRegex = /([0-9]{2}[A-Z]{2}[0-9]{2})/;
 const excludedNameWords = new Set(["sample", "graduate"]);
 
+type Candidate = { text: string; confidence: number; index: number };
+
+type ParserDebug = {
+  failureReason: string | null;
+  seatCandidates: Candidate[];
+  nameCandidates: Candidate[];
+  selectedSeat: Candidate | null;
+  selectedName: Candidate | null;
+};
+
 const setAppState = (stateLabel: string): void => {
   appStateElement.innerHTML = `<strong>App state:</strong> ${stateLabel}`;
 };
@@ -134,7 +167,40 @@ const setSampleStatus = (message: string): void => {
   sampleStatusElement.innerHTML = `<strong>OCR request:</strong> ${message}`;
 };
 
-const updateOCRDisplay = (items: OCRItem[], result: OCRResult | null): void => {
+const updateDiagnosticsDisplay = (
+  response: OCRResponse | null,
+  parserDebug: ParserDebug | null
+): void => {
+  const path = response?.profiling?.path ?? "-";
+  const requestId = response?.debug?.request_id ?? "-";
+  const attemptNumber = response?.debug?.attempt_number;
+  const attemptDir = response?.debug?.attempt_dir;
+  const selectedPass = response?.debug?.label_detection?.selected_pass ?? "-";
+  const parserStatus = parserDebug ? parserDebug.failureReason ?? "parsed" : "-";
+
+  backendPathElement.innerHTML = `<strong>Backend path:</strong> ${path}`;
+  backendRequestElement.innerHTML = `<strong>Request ID:</strong> ${requestId}`;
+  backendAttemptElement.innerHTML = `<strong>Attempt:</strong> ${
+    attemptNumber && attemptDir ? `${attemptNumber} (${attemptDir})` : "-"
+  }`;
+  backendPassElement.innerHTML = `<strong>Selected pass:</strong> ${selectedPass}`;
+  parserStatusElement.innerHTML = `<strong>Parser status:</strong> ${parserStatus}`;
+  ocrDiagnosticsElement.textContent = JSON.stringify(
+    {
+      profiling: response?.profiling ?? null,
+      debug: response?.debug ?? null,
+      parser: parserDebug ?? null
+    },
+    null,
+    2
+  );
+};
+
+const updateOCRDisplay = (
+  items: OCRItem[],
+  result: OCRResult | null,
+  parserDebug: ParserDebug | null
+): void => {
   latestOCRItems = items;
   latestOCRResult = result;
 
@@ -142,10 +208,34 @@ const updateOCRDisplay = (items: OCRItem[], result: OCRResult | null): void => {
   ocrRawElement.textContent = JSON.stringify(items.slice(0, 20), null, 2);
 
   if (!result) {
-    ocrSummaryElement.innerHTML = "<strong>Latest OCR result:</strong> No valid name/seat parsed";
-    resultNameElement.innerHTML = "<strong>Name:</strong> -";
-    resultSeatElement.innerHTML = "<strong>Seat:</strong> -";
-    resultConfidenceElement.innerHTML = "<strong>Confidence:</strong> -";
+    const partialName = parserDebug?.selectedName?.text ?? null;
+    const partialSeat = parserDebug?.selectedSeat?.text ?? null;
+
+    if (!partialName && !partialSeat) {
+      ocrSummaryElement.innerHTML = "<strong>Latest OCR result:</strong> No valid name/seat parsed";
+      resultNameElement.innerHTML = "<strong>Name:</strong> -";
+      resultSeatElement.innerHTML = "<strong>Seat:</strong> -";
+      resultConfidenceElement.innerHTML = "<strong>Confidence:</strong> -";
+      return;
+    }
+
+    const partialNameConfidence = parserDebug?.selectedName?.confidence;
+    const partialSeatConfidence = parserDebug?.selectedSeat?.confidence;
+    const partialCombinedConfidence =
+      partialNameConfidence !== undefined && partialSeatConfidence !== undefined
+        ? Math.min(partialNameConfidence, partialSeatConfidence)
+        : undefined;
+
+    ocrSummaryElement.innerHTML = "<strong>Latest OCR result:</strong> Partial parse";
+    resultNameElement.innerHTML = `<strong>Name:</strong> ${partialName ?? "-"}`;
+    resultSeatElement.innerHTML = `<strong>Seat:</strong> ${partialSeat ?? "-"}`;
+    resultConfidenceElement.innerHTML = `<strong>Confidence:</strong> name ${
+      partialNameConfidence !== undefined ? partialNameConfidence.toFixed(2) : "-"
+    }, seat ${
+      partialSeatConfidence !== undefined ? partialSeatConfidence.toFixed(2) : "-"
+    }, combined ${
+      partialCombinedConfidence !== undefined ? partialCombinedConfidence.toFixed(2) : "-"
+    }`;
     return;
   }
 
@@ -253,12 +343,21 @@ const captureFrameBlob = async (): Promise<Blob | null> => {
 
 const sanitizeSeatText = (text: string): string => text.toUpperCase().replace(/[^A-Z0-9]/g, "");
 
-const parseResultFromOCRItems = (items: OCRItem[]): OCRResult | null => {
+const parseResultFromOCRItems = (
+  items: OCRItem[]
+): { result: OCRResult | null; debug: ParserDebug } => {
   if (items.length === 0) {
-    return null;
+    return {
+      result: null,
+      debug: {
+        failureReason: "no_ocr_items",
+        seatCandidates: [],
+        nameCandidates: [],
+        selectedSeat: null,
+        selectedName: null
+      }
+    };
   }
-
-  type Candidate = { text: string; confidence: number; index: number };
 
   const seatCandidates: Candidate[] = [];
   const nameCandidates: Candidate[] = [];
@@ -280,34 +379,90 @@ const parseResultFromOCRItems = (items: OCRItem[]): OCRResult | null => {
     }
   }
 
+  seatCandidates.sort((a, b) => b.confidence - a.confidence);
+  nameCandidates.sort((a, b) => b.confidence - a.confidence);
+  const selectedSeat = seatCandidates[0] ?? null;
+
   if (seatCandidates.length === 0) {
-    return null;
+    return {
+      result: null,
+      debug: {
+        failureReason: "no_seat_candidate",
+        seatCandidates,
+        nameCandidates,
+        selectedSeat,
+        selectedName: nameCandidates[0] ?? null
+      }
+    };
   }
 
-  seatCandidates.sort((a, b) => b.confidence - a.confidence);
-  const seat = seatCandidates[0];
+  const seat = selectedSeat;
+  if (!seat) {
+    return {
+      result: null,
+      debug: {
+        failureReason: "no_seat_candidate",
+        seatCandidates,
+        nameCandidates,
+        selectedSeat: null,
+        selectedName: nameCandidates[0] ?? null
+      }
+    };
+  }
 
   const filteredNameCandidates = nameCandidates.filter((candidate) => candidate.index !== seat.index);
+  filteredNameCandidates.sort((a, b) => b.confidence - a.confidence);
+  const selectedName = filteredNameCandidates[0] ?? null;
+
   if (filteredNameCandidates.length === 0) {
-    return null;
+    return {
+      result: null,
+      debug: {
+        failureReason: nameCandidates.length > 0 ? "name_candidates_only_on_seat_line" : "no_name_candidate",
+        seatCandidates,
+        nameCandidates,
+        selectedSeat: seat,
+        selectedName
+      }
+    };
   }
 
-  filteredNameCandidates.sort((a, b) => b.confidence - a.confidence);
-  const name = filteredNameCandidates[0];
+  const name = selectedName;
+  if (!name) {
+    return {
+      result: null,
+      debug: {
+        failureReason: "no_name_candidate",
+        seatCandidates,
+        nameCandidates,
+        selectedSeat: seat,
+        selectedName: null
+      }
+    };
+  }
 
   const combined = Math.min(name.confidence, seat.confidence);
   return {
-    holderName: name.text,
-    seatNumber: seat.text,
-    confidence: {
-      name: name.confidence,
-      seat: seat.confidence,
-      combined
+    result: {
+      holderName: name.text,
+      seatNumber: seat.text,
+      confidence: {
+        name: name.confidence,
+        seat: seat.confidence,
+        combined
+      }
+    },
+    debug: {
+      failureReason: null,
+      seatCandidates,
+      nameCandidates,
+      selectedSeat: seat,
+      selectedName: name
     }
   };
 };
 
-const fetchOCRItems = async (blob: Blob): Promise<OCRItem[]> => {
+const fetchOCRData = async (blob: Blob): Promise<OCRResponse> => {
   const formData = new FormData();
   formData.append("file", blob, "frame.jpg");
 
@@ -326,11 +481,11 @@ const fetchOCRItems = async (blob: Blob): Promise<OCRItem[]> => {
       throw new Error(`OCR backend returned ${response.status}`);
     }
 
-    const data = (await response.json()) as { error?: string; results?: OCRItem[] };
+    const data = (await response.json()) as OCRResponse;
     if (typeof data.error === "string" && data.error.trim().length > 0) {
       throw new Error(`OCR backend error: ${data.error}`);
     }
-    return Array.isArray(data.results) ? data.results : [];
+    return data;
   } finally {
     window.clearTimeout(timeoutId);
   }
@@ -353,8 +508,9 @@ const captureAndSendOCR = async (): Promise<void> => {
   setSampleStatus("sending");
 
   try {
-    const items = await fetchOCRItems(blob);
-    const parsed = parseResultFromOCRItems(items);
+    const response = await fetchOCRData(blob);
+    const items = Array.isArray(response.results) ? response.results : [];
+    const { result: parsed, debug: parserDebug } = parseResultFromOCRItems(items);
 
     if (parsed) {
       const passName = parsed.confidence.name >= appConfig.confidenceThresholdName;
@@ -368,11 +524,13 @@ const captureAndSendOCR = async (): Promise<void> => {
       scanController.setState("Scanning");
     }
 
-    updateOCRDisplay(items, parsed);
+    updateOCRDisplay(items, parsed, parserDebug);
+    updateDiagnosticsDisplay(response, parserDebug);
     setSampleStatus(`completed (${items.length} OCR lines)`);
     setCameraMessage("Capture sent to OCR.");
   } catch (error) {
     scanController.setState("RetryNeeded");
+    updateDiagnosticsDisplay(null, null);
     if (error instanceof DOMException && error.name === "AbortError") {
       setCameraMessage(`OCR request timed out after ${Math.max(500, appConfig.scanTimeoutMs)}ms.`);
     } else {
