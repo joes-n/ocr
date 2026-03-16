@@ -1,0 +1,155 @@
+{
+  "request_id": "2d7e46da",
+  "timestamp_utc": "2026-03-16T08:55:41Z",
+  "attempt": {
+    "number": 7,
+    "dir_name": "try_0007",
+    "artifacts_dir": "/home/raner/proj_ocr/ocr_debug/try_0007"
+  },
+  "profiling": {
+    "path": "mobile_bottom60_roi",
+    "decode_ms": 15.67,
+    "label_detect_ms": 0.0,
+    "crop_ms": 0.04,
+    "seg_ms": 0.0,
+    "ocr_ms": 1547.64,
+    "mobile_ocr_ms": 1547.64,
+    "fallback_ocr_ms": 0.0,
+    "total_ms": 1589.58
+  },
+  "artifacts": {
+    "capture": {
+      "filename": "capture.jpg",
+      "relative_path": "capture.jpg",
+      "enabled": true,
+      "required": true,
+      "saved": true
+    },
+    "roi_bottom60": {
+      "filename": "roi_bottom60.jpg",
+      "relative_path": "roi_bottom60.jpg",
+      "enabled": true,
+      "required": false,
+      "saved": true
+    },
+    "diag": {
+      "filename": "diag.json",
+      "relative_path": "diag.json",
+      "enabled": true,
+      "required": true,
+      "saved": true
+    }
+  },
+  "image_shape": {
+    "width": 1280,
+    "height": 720
+  },
+  "label_detection": {
+    "strategy": "bottom_60_percent_roi",
+    "roi_fraction": 0.6,
+    "selected_pass": "mobile_bottom60_roi",
+    "selected_bbox": {
+      "x": 0,
+      "y": 288,
+      "w": 1280,
+      "h": 432
+    },
+    "selected_candidate": {
+      "engine": "PP-OCRv5_mobile_det+PP-OCRv5_mobile_rec",
+      "roi_fraction": 0.6
+    },
+    "validation_attempts": [
+      {
+        "stage": "mobile_bottom60_roi",
+        "output_count": 3,
+        "ocr_ms": 1547.64,
+        "accepted": true
+      }
+    ],
+    "roi_bbox": {
+      "x": 0,
+      "y": 288,
+      "w": 1280,
+      "h": 432
+    },
+    "mobile_error": null
+  },
+  "segmentation": null,
+  "ocr": {
+    "path": "mobile_bottom60_roi",
+    "output_count": 3,
+    "output_preview": [
+      {
+        "box": [
+          [
+            305.0,
+            445.0
+          ],
+          [
+            571.0,
+            445.0
+          ],
+          [
+            571.0,
+            544.0
+          ],
+          [
+            305.0,
+            544.0
+          ]
+        ],
+        "text": "陳大文",
+        "confidence": 0.9830160140991211
+      },
+      {
+        "box": [
+          [
+            364.0,
+            551.0
+          ],
+          [
+            516.0,
+            551.0
+          ],
+          [
+            516.0,
+            577.0
+          ],
+          [
+            364.0,
+            577.0
+          ]
+        ],
+        "text": "CHATa Mam",
+        "confidence": 0.7464303970336914
+      },
+      {
+        "box": [
+          [
+            348.0,
+            600.0
+          ],
+          [
+            621.0,
+            591.0
+          ],
+          [
+            622.0,
+            618.0
+          ],
+          [
+            349.0,
+            626.0
+          ]
+        ],
+        "text": "SeatOSC13 BSCHCEF3",
+        "confidence": 0.7215930223464966
+      }
+    ]
+  },
+  "frontend_parser": {
+    "available": false,
+    "reason": "Name/seat parsing runs in the browser after the backend response."
+  },
+  "error": null
+}

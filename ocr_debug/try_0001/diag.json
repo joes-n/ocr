@@ -1,0 +1,48 @@
+{
+  "request_id": "ba1b9349",
+  "timestamp_utc": "2026-03-16T08:29:47Z",
+  "attempt": {
+    "number": 1,
+    "dir_name": "try_0001",
+    "artifacts_dir": "/home/raner/proj_ocr/ocr_debug/try_0001"
+  },
+  "profiling": {
+    "total_ms": 11602.7
+  },
+  "artifacts": {
+    "capture": {
+      "filename": "capture.jpg",
+      "relative_path": "capture.jpg",
+      "enabled": true,
+      "required": true,
+      "saved": true
+    },
+    "roi_bottom60": {
+      "filename": "roi_bottom60.jpg",
+      "relative_path": "roi_bottom60.jpg",
+      "enabled": true,
+      "required": false,
+      "saved": true
+    },
+    "diag": {
+      "filename": "diag.json",
+      "relative_path": "diag.json",
+      "enabled": true,
+      "required": true,
+      "saved": true
+    }
+  },
+  "image_shape": null,
+  "label_detection": null,
+  "segmentation": null,
+  "ocr": {
+    "path": null,
+    "output_count": 0,
+    "output_preview": []
+  },
+  "frontend_parser": {
+    "available": false,
+    "reason": "Name/seat parsing runs in the browser after the backend response."
+  },
+  "error": "The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"
+}

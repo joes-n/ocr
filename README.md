@@ -130,3 +130,4 @@ Default backend URL is `/ocr`, which works with the Vite dev proxy.
 - The backend currently allows CORS from any origin.
 - OCR responses return `results` plus a `profiling` object.
 - OS-specific setup examples live in `SETUP.md`.
+- Write test results to ocr_debug/ by OCR_DEBUG_DIR=./ocr_debug OCR_DEBUG_SAVE_IMAGES=true python main.py

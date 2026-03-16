@@ -1,0 +1,155 @@
+{
+  "request_id": "89cc998f",
+  "timestamp_utc": "2026-03-16T08:32:29Z",
+  "attempt": {
+    "number": 4,
+    "dir_name": "try_0004",
+    "artifacts_dir": "/home/raner/proj_ocr/ocr_debug/try_0004"
+  },
+  "profiling": {
+    "path": "mobile_bottom60_roi",
+    "decode_ms": 14.84,
+    "label_detect_ms": 0.0,
+    "crop_ms": 0.03,
+    "seg_ms": 0.0,
+    "ocr_ms": 913.44,
+    "mobile_ocr_ms": 913.44,
+    "fallback_ocr_ms": 0.0,
+    "total_ms": 954.92
+  },
+  "artifacts": {
+    "capture": {
+      "filename": "capture.jpg",
+      "relative_path": "capture.jpg",
+      "enabled": true,
+      "required": true,
+      "saved": true
+    },
+    "roi_bottom60": {
+      "filename": "roi_bottom60.jpg",
+      "relative_path": "roi_bottom60.jpg",
+      "enabled": true,
+      "required": false,
+      "saved": true
+    },
+    "diag": {
+      "filename": "diag.json",
+      "relative_path": "diag.json",
+      "enabled": true,
+      "required": true,
+      "saved": true
+    }
+  },
+  "image_shape": {
+    "width": 1280,
+    "height": 720
+  },
+  "label_detection": {
+    "strategy": "bottom_60_percent_roi",
+    "roi_fraction": 0.6,
+    "selected_pass": "mobile_bottom60_roi",
+    "selected_bbox": {
+      "x": 0,
+      "y": 288,
+      "w": 1280,
+      "h": 432
+    },
+    "selected_candidate": {
+      "engine": "PP-OCRv5_mobile_det+PP-OCRv5_mobile_rec",
+      "roi_fraction": 0.6
+    },
+    "validation_attempts": [
+      {
+        "stage": "mobile_bottom60_roi",
+        "output_count": 3,
+        "ocr_ms": 913.44,
+        "accepted": true
+      }
+    ],
+    "roi_bbox": {
+      "x": 0,
+      "y": 288,
+      "w": 1280,
+      "h": 432
+    },
+    "mobile_error": null
+  },
+  "segmentation": null,
+  "ocr": {
+    "path": "mobile_bottom60_roi",
+    "output_count": 3,
+    "output_preview": [
+      {
+        "box": [
+          [
+            316.0,
+            436.0
+          ],
+          [
+            587.0,
+            431.0
+          ],
+          [
+            589.0,
+            536.0
+          ],
+          [
+            318.0,
+            541.0
+          ]
+        ],
+        "text": "陳大文",
+        "confidence": 0.984836757183075
+      },
+      {
+        "box": [
+          [
+            371.0,
+            547.0
+          ],
+          [
+            531.0,
+            544.0
+          ],
+          [
+            531.0,
+            571.0
+          ],
+          [
+            371.0,
+            574.0
+          ]
+        ],
+        "text": "CHAV Tai Man",
+        "confidence": 0.8398764133453369
+      },
+      {
+        "box": [
+          [
+            354.0,
+            598.0
+          ],
+          [
+            637.0,
+            593.0
+          ],
+          [
+            637.0,
+            619.0
+          ],
+          [
+            354.0,
+            624.0
+          ]
+        ],
+        "text": "Seat OAC13 P5CHCEF3",
+        "confidence": 0.8171466588973999
+      }
+    ]
+  },
+  "frontend_parser": {
+    "available": false,
+    "reason": "Name/seat parsing runs in the browser after the backend response."
+  },
+  "error": null
+}
