@@ -51,7 +51,8 @@ ocr_fallback = PaddleOCR(
 logger.info("PaddleOCR fallback OCR initialized.")
 
 MAX_IMAGE_SIDE = 1920
-BOTTOM_ROI_FRACTION = 0.6
+BOTTOM_ROI_FRACTION = 0.5
+LEFT_ROI_FRACTION = 0.6
 DEBUG_ARTIFACT_DIR = os.environ.get("OCR_DEBUG_DIR", "").strip()
 DEBUG_SAVE_IMAGES = os.environ.get("OCR_DEBUG_SAVE_IMAGES", "true").strip().lower() not in {
     "",
@@ -205,8 +206,9 @@ def run_ocr(ocr_engine: PaddleOCR, img: np.ndarray, box_offset=(0, 0)) -> list:
 def crop_bottom_roi(img: np.ndarray):
     height, width = img.shape[:2]
     y_start = max(0, min(height - 1, int(height * (1.0 - BOTTOM_ROI_FRACTION))))
-    roi = img[y_start:height, 0:width]
-    bbox = (0, y_start, width, max(1, height - y_start))
+    x_end = max(1, min(width, int(width * LEFT_ROI_FRACTION)))
+    roi = img[y_start:height, 0:x_end]
+    bbox = (0, y_start, x_end, max(1, height - y_start))
     return roi, bbox
 
 
@@ -294,15 +296,16 @@ async def process_image(file: UploadFile = File(...)):
         roi_img, roi_bbox = crop_bottom_roi(img)
         crop_ms = (time.perf_counter() - crop_start) * 1000.0
 
-        artifacts["roi_bottom60"] = _save_image_artifact(
+        artifacts["roi_bottom50_left60"] = _save_image_artifact(
             debug_dir,
-            _make_artifact_entry("roi_bottom60.jpg", enabled=DEBUG_SAVE_IMAGES),
+            _make_artifact_entry("roi_bottom50_left60.jpg", enabled=DEBUG_SAVE_IMAGES),
             roi_img,
         )
 
         label_debug = {
-            "strategy": "bottom_60_percent_roi",
+            "strategy": "bottom_50_percent_left_60_percent_roi",
             "roi_fraction": BOTTOM_ROI_FRACTION,
+            "left_fraction": LEFT_ROI_FRACTION,
             "selected_pass": None,
             "selected_bbox": None,
             "selected_candidate": None,
@@ -314,7 +317,7 @@ async def process_image(file: UploadFile = File(...)):
         mobile_ocr_ms = 0.0
         fallback_ocr_ms = 0.0
         output = []
-        path = "mobile_bottom60_roi"
+        path = "mobile_bottom50_left60_roi"
 
         try:
             mobile_start = time.perf_counter()
@@ -322,7 +325,7 @@ async def process_image(file: UploadFile = File(...)):
             mobile_ocr_ms = (time.perf_counter() - mobile_start) * 1000.0
             label_debug["validation_attempts"].append(
                 {
-                    "stage": "mobile_bottom60_roi",
+                    "stage": "mobile_bottom50_left60_roi",
                     "output_count": len(output),
                     "ocr_ms": _rounded(mobile_ocr_ms, 2),
                     "accepted": bool(output),
@@ -341,13 +344,14 @@ async def process_image(file: UploadFile = File(...)):
             logger.error(traceback.format_exc())
 
         if output:
-            label_debug["selected_pass"] = "mobile_bottom60_roi"
+            label_debug["selected_pass"] = "mobile_bottom50_left60_roi"
             label_debug["selected_bbox"] = _bbox_dict(roi_bbox)
             label_debug["selected_candidate"] = {
                 "engine": "PP-OCRv5_mobile_det+PP-OCRv5_mobile_rec",
                 "roi_fraction": BOTTOM_ROI_FRACTION,
+                "left_fraction": LEFT_ROI_FRACTION,
             }
-            path = "mobile_bottom60_roi"
+            path = "mobile_bottom50_left60_roi"
         else:
             if path != "fallback_mobile_error":
                 path = "fallback_mobile_empty"
