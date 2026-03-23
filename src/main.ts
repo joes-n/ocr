@@ -1,7 +1,7 @@
 import "./styles.css";
 import { appConfig } from "./config";
 import { ScanController } from "./scan-controller";
-import type { AudioResolution, OCRItem, OCRResponse, OCRResult } from "./types";
+import type { AudioResolution, OCRItem, OCRResponse, OCRResult, SeatAudioResult } from "./types";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 
@@ -20,6 +20,8 @@ let preferredFacingMode: "user" | "environment" = "environment";
 let selectedCameraId: string | null = null;
 let cameraStream: MediaStream | null = null;
 let isOCRInFlight = false;
+let activeSeatAudio: HTMLAudioElement | null = null;
+let nameSeatDirectoryPromise: Promise<Map<string, string>> | null = null;
 
 const plannedAudioOutput: AudioResolution = {
   playbackRate: appConfig.audioPlaybackRate,
@@ -64,6 +66,8 @@ app.innerHTML = `
         <p id="result-name"><strong>Name:</strong> -</p>
         <p id="result-seat"><strong>Seat:</strong> -</p>
         <p id="result-confidence"><strong>Confidence:</strong> -</p>
+        <p id="audio-seat"><strong>CSV seat:</strong> -</p>
+        <p id="audio-status"><strong>Seat audio:</strong> idle</p>
       </div>
 
       <div class="result-panel">
@@ -99,6 +103,8 @@ const previewElement = document.querySelector<HTMLVideoElement>("#camera-preview
 const resultNameElement = document.querySelector<HTMLParagraphElement>("#result-name");
 const resultSeatElement = document.querySelector<HTMLParagraphElement>("#result-seat");
 const resultConfidenceElement = document.querySelector<HTMLParagraphElement>("#result-confidence");
+const audioSeatElement = document.querySelector<HTMLParagraphElement>("#audio-seat");
+const audioStatusElement = document.querySelector<HTMLParagraphElement>("#audio-status");
 const ocrCountElement = document.querySelector<HTMLParagraphElement>("#ocr-count");
 const ocrRawElement = document.querySelector<HTMLPreElement>("#ocr-raw");
 const backendPathElement = document.querySelector<HTMLParagraphElement>("#backend-path");
@@ -122,6 +128,8 @@ if (
   !resultNameElement ||
   !resultSeatElement ||
   !resultConfidenceElement ||
+  !audioSeatElement ||
+  !audioStatusElement ||
   !ocrCountElement ||
   !ocrRawElement ||
   !backendPathElement ||
@@ -165,6 +173,158 @@ const setCameraMessage = (message: string): void => {
 
 const setSampleStatus = (message: string): void => {
   sampleStatusElement.innerHTML = `<strong>OCR request:</strong> ${message}`;
+};
+
+const updateSeatAudioDisplay = (result: SeatAudioResult): void => {
+  audioSeatElement.innerHTML = `<strong>CSV seat:</strong> ${result.resolvedSeat ?? "-"}`;
+  audioStatusElement.innerHTML = `<strong>Seat audio:</strong> ${result.message}`;
+};
+
+const stopSeatAudioPlayback = (): void => {
+  if (!activeSeatAudio) {
+    return;
+  }
+
+  activeSeatAudio.pause();
+  activeSeatAudio.currentTime = 0;
+  activeSeatAudio = null;
+};
+
+const parseNameSeatDirectory = (csvText: string): Map<string, string> => {
+  const rows = csvText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  if (rows.length === 0) {
+    throw new Error("names.csv is empty");
+  }
+
+  const header = rows[0].replace(/^\ufeff/, "");
+  if (header !== "Seat No,Chinese Name") {
+    throw new Error(`Unexpected names.csv header: ${header}`);
+  }
+
+  const directory = new Map<string, string>();
+
+  for (const row of rows.slice(1)) {
+    const separatorIndex = row.indexOf(",");
+    if (separatorIndex <= 0 || separatorIndex === row.length - 1) {
+      continue;
+    }
+
+    const seat = row.slice(0, separatorIndex).trim();
+    const name = row.slice(separatorIndex + 1).trim();
+    if (seat && name) {
+      directory.set(name, seat);
+    }
+  }
+
+  return directory;
+};
+
+const loadNameSeatDirectory = async (): Promise<Map<string, string>> => {
+  const response = await fetch("/names.csv", { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`names.csv returned ${response.status}`);
+  }
+
+  return parseNameSeatDirectory(await response.text());
+};
+
+const ensureNameSeatDirectory = async (): Promise<Map<string, string>> => {
+  if (!nameSeatDirectoryPromise) {
+    nameSeatDirectoryPromise = loadNameSeatDirectory().catch((error: unknown) => {
+      nameSeatDirectoryPromise = null;
+      throw error;
+    });
+  }
+
+  return nameSeatDirectoryPromise;
+};
+
+const buildSeatAudioUrl = (seatNumber: string): string => `/audio/${encodeURIComponent(seatNumber)}.wav`;
+
+const resolveAndPlaySeatAudio = async (lookupName: string | null): Promise<SeatAudioResult> => {
+  if (!lookupName) {
+    stopSeatAudioPlayback();
+    return {
+      lookupName: null,
+      resolvedSeat: null,
+      sourceUrl: null,
+      status: "skipped",
+      message: "skipped (no parsed name)"
+    };
+  }
+
+  let directory: Map<string, string>;
+  try {
+    directory = await ensureNameSeatDirectory();
+  } catch (error) {
+    stopSeatAudioPlayback();
+    const message = error instanceof Error ? error.message : "Unable to load names.csv";
+    return {
+      lookupName,
+      resolvedSeat: null,
+      sourceUrl: null,
+      status: "error",
+      message: `error (${message})`
+    };
+  }
+
+  const resolvedSeat = directory.get(lookupName) ?? null;
+  if (!resolvedSeat) {
+    stopSeatAudioPlayback();
+    return {
+      lookupName,
+      resolvedSeat: null,
+      sourceUrl: null,
+      status: "skipped",
+      message: `skipped (no CSV match for ${lookupName})`
+    };
+  }
+
+  const sourceUrl = buildSeatAudioUrl(resolvedSeat);
+  const audio = new Audio(sourceUrl);
+  audio.playbackRate = appConfig.audioPlaybackRate;
+  audio.preload = "auto";
+
+  stopSeatAudioPlayback();
+  activeSeatAudio = audio;
+
+  try {
+    await audio.play();
+    audio.addEventListener(
+      "ended",
+      () => {
+        if (activeSeatAudio === audio) {
+          activeSeatAudio = null;
+        }
+      },
+      { once: true }
+    );
+
+    return {
+      lookupName,
+      resolvedSeat,
+      sourceUrl,
+      status: "playing",
+      message: `playing ${resolvedSeat}.wav`
+    };
+  } catch (error) {
+    if (activeSeatAudio === audio) {
+      activeSeatAudio = null;
+    }
+
+    const message = error instanceof Error ? error.message : "Audio playback failed";
+    return {
+      lookupName,
+      resolvedSeat,
+      sourceUrl,
+      status: "error",
+      message: `error (${message})`
+    };
+  }
 };
 
 const updateDiagnosticsDisplay = (
@@ -511,6 +671,8 @@ const captureAndSendOCR = async (): Promise<void> => {
     const response = await fetchOCRData(blob);
     const items = Array.isArray(response.results) ? response.results : [];
     const { result: parsed, debug: parserDebug } = parseResultFromOCRItems(items);
+    const lookupName = parserDebug.selectedName?.text.trim() ?? null;
+    const seatAudioResult = await resolveAndPlaySeatAudio(lookupName);
 
     if (parsed) {
       const passName = parsed.confidence.name >= appConfig.confidenceThresholdName;
@@ -525,12 +687,20 @@ const captureAndSendOCR = async (): Promise<void> => {
     }
 
     updateOCRDisplay(items, parsed, parserDebug);
+    updateSeatAudioDisplay(seatAudioResult);
     updateDiagnosticsDisplay(response, parserDebug);
     setSampleStatus(`completed (${items.length} OCR lines)`);
     setCameraMessage("Capture sent to OCR.");
   } catch (error) {
     scanController.setState("RetryNeeded");
     updateDiagnosticsDisplay(null, null);
+    updateSeatAudioDisplay({
+      lookupName: null,
+      resolvedSeat: null,
+      sourceUrl: null,
+      status: "error",
+      message: "error (OCR request failed before audio lookup)"
+    });
     if (error instanceof DOMException && error.name === "AbortError") {
       setCameraMessage(`OCR request timed out after ${Math.max(500, appConfig.scanTimeoutMs)}ms.`);
     } else {
@@ -562,6 +732,14 @@ const stopPreview = (): void => {
   startCameraButton.disabled = !hasCameraApi || !isChrome;
   updateCameraControlsState(hasCameraApi && isChrome);
   scanController.setState("Ready");
+  stopSeatAudioPlayback();
+  updateSeatAudioDisplay({
+    lookupName: null,
+    resolvedSeat: null,
+    sourceUrl: null,
+    status: "idle",
+    message: "idle"
+  });
   setCameraMessage("Camera preview stopped.");
 };
 
@@ -657,6 +835,16 @@ switchFacingButton.addEventListener("click", () => {
 
 navigator.mediaDevices?.addEventListener?.("devicechange", () => {
   void populateCameraOptions();
+});
+
+void ensureNameSeatDirectory().catch(() => {
+  updateSeatAudioDisplay({
+    lookupName: null,
+    resolvedSeat: null,
+    sourceUrl: null,
+    status: "error",
+    message: "error (unable to preload names.csv)"
+  });
 });
 
 window.addEventListener("beforeunload", stopPreview);

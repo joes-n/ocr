@@ -2,6 +2,8 @@
 
 Browser-based MVP for capturing a ticket image from a webcam, sending it to a local OCR backend, and extracting a holder name plus seat code.
 
+When the parsed name exactly matches `Chinese Name` in `names.csv`, the frontend resolves the seat from the CSV and attempts to play `audio/<Seat No>.wav`.
+
 ## Current State
 
 - Frontend: Vite + TypeScript app in `src/`
@@ -19,6 +21,8 @@ There is no sample ticket image checked into this repo anymore. Any backend veri
 │   ├── main.py
 │   ├── requirements.txt
 │   └── test_script.py
+├── audio/
+├── names.csv
 ├── src/
 │   ├── main.ts
 │   ├── config.ts
@@ -41,7 +45,8 @@ There is no sample ticket image checked into this repo anymore. Any backend veri
 6. The frontend parses OCR lines and tries to extract:
    - `holderName`
    - `seatNumber` matching `([0-9]{2}[A-Z]{2}[0-9]{2})`
-7. The UI shows parsed fields, raw OCR lines, and scan state (`Ready`, `Scanning`, `Recognized`, `RetryNeeded`).
+7. The frontend also trims the selected parsed name, exact-matches it against `names.csv`, and resolves a seat-audio file path as `audio/<Seat No>.wav`.
+8. The UI shows parsed fields, raw OCR lines, seat-audio status, and scan state (`Ready`, `Scanning`, `Recognized`, `RetryNeeded`).
 
 ## Prerequisites
 
@@ -123,6 +128,12 @@ Frontend env vars are defined in `src/config.ts`:
 - `VITE_OCR_BACKEND_URL`
 
 Default backend URL is `/ocr`, which works with the Vite dev proxy.
+
+## Seat Audio Assets
+
+- Keep `names.csv` at repo root with header `Seat No,Chinese Name`.
+- Put seat WAV files in repo-root `audio/`, named exactly like the CSV seat number, for example `audio/6E53.wav`.
+- The frontend uses exact trimmed Chinese-name matches only; if no CSV row or WAV exists, audio is skipped gracefully.
 
 ## Notes And Limitations
 

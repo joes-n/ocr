@@ -67,3 +67,13 @@ export type AudioResolution = {
   playbackRate: number;
   segments: AudioSegment[];
 };
+
+export type SeatAudioStatus = "idle" | "playing" | "skipped" | "error";
+
+export type SeatAudioResult = {
+  lookupName: string | null;
+  resolvedSeat: string | null;
+  sourceUrl: string | null;
+  status: SeatAudioStatus;
+  message: string;
+};
