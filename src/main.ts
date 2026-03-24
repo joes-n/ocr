@@ -1,7 +1,14 @@
 import "./styles.css";
 import { appConfig } from "./config";
 import { ScanController } from "./scan-controller";
-import type { AudioResolution, OCRItem, OCRResponse, OCRResult, SeatAudioResult } from "./types";
+import type {
+  AudioResolution,
+  OCRItem,
+  OCRResponse,
+  OCRResult,
+  RuntimeStatus,
+  SeatAudioResult,
+} from "./types";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 
@@ -15,29 +22,33 @@ const scanController = new ScanController("Ready");
 
 let latestOCRResult: OCRResult | null = null;
 let latestOCRItems: OCRItem[] = [];
-let latestOCRDiagnostics = "{}";
+let latestRuntimeStatus: RuntimeStatus | null = null;
 let preferredFacingMode: "user" | "environment" = "environment";
 let selectedCameraId: string | null = null;
 let cameraStream: MediaStream | null = null;
 let isOCRInFlight = false;
 let activeSeatAudio: HTMLAudioElement | null = null;
 let nameSeatDirectoryPromise: Promise<Map<string, string>> | null = null;
+let runtimePollTimer: number | null = null;
 
 const plannedAudioOutput: AudioResolution = {
   playbackRate: appConfig.audioPlaybackRate,
-  segments: []
+  segments: [],
 };
 
 app.innerHTML = `
   <main class="shell">
     <header>
       <h1>OCR Ticket Reader</h1>
-      <p>Webcam frame is sent to PaddleOCR backend, then name/seat are parsed in frontend.</p>
+      <p>Webcam frame is sent to the local PaddleOCR backend, then name/seat are parsed in the browser.</p>
     </header>
     <section class="panel">
-      <p><strong>Browser check:</strong> ${isChrome ? "Chrome detected" : "Please use desktop Chrome for MVP."}</p>
+      <p><strong>Browser check:</strong> ${isChrome ? "Chrome detected" : "Please use desktop Chrome for camera scanning."}</p>
       <p><strong>Camera API:</strong> ${hasCameraApi ? "Available" : "Not available"}</p>
       <p><strong>OCR backend:</strong> <code>${appConfig.ocrBackendUrl}</code></p>
+      <p><strong>App mode:</strong> <span id="app-mode">Checking runtime...</span></p>
+      <p><strong>Backend runtime:</strong> <span id="backend-runtime">Checking runtime...</span></p>
+      <p id="runtime-message">Connecting to the local OCR service...</p>
       <p><strong>Name confidence threshold:</strong> ${appConfig.confidenceThresholdName}</p>
       <p><strong>Seat confidence threshold:</strong> ${appConfig.confidenceThresholdSeat}</p>
       <p><strong>Scan timeout (ms):</strong> ${appConfig.scanTimeoutMs}</p>
@@ -83,19 +94,23 @@ app.innerHTML = `
         <p id="backend-attempt"><strong>Attempt:</strong> -</p>
         <p id="backend-pass"><strong>Selected pass:</strong> -</p>
         <p id="parser-status"><strong>Parser status:</strong> -</p>
-        <pre id="ocr-diagnostics" class="ocr-raw ocr-diagnostics">${latestOCRDiagnostics}</pre>
+        <pre id="ocr-diagnostics" class="ocr-raw ocr-diagnostics">{}</pre>
       </div>
 
       <div class="actions">
-        <button id="start-camera-btn" type="button">Enable Camera</button>
+        <button id="start-camera-btn" type="button" disabled>Enable Camera</button>
         <button id="capture-ocr-btn" type="button" disabled>Capture &amp; Send to OCR</button>
         <button id="stop-camera-btn" type="button" disabled>Stop Camera</button>
+        <button id="quit-app-btn" type="button" hidden disabled>Quit App</button>
       </div>
     </section>
   </main>
 `;
 
 const appStateElement = document.querySelector<HTMLParagraphElement>("#app-state");
+const appModeElement = document.querySelector<HTMLSpanElement>("#app-mode");
+const runtimeStateElement = document.querySelector<HTMLSpanElement>("#backend-runtime");
+const runtimeMessageElement = document.querySelector<HTMLParagraphElement>("#runtime-message");
 const cameraMessageElement = document.querySelector<HTMLParagraphElement>("#camera-message");
 const sampleStatusElement = document.querySelector<HTMLParagraphElement>("#sample-status");
 const ocrSummaryElement = document.querySelector<HTMLParagraphElement>("#ocr-summary");
@@ -118,9 +133,13 @@ const switchFacingButton = document.querySelector<HTMLButtonElement>("#switch-fa
 const startCameraButton = document.querySelector<HTMLButtonElement>("#start-camera-btn");
 const captureOCRButton = document.querySelector<HTMLButtonElement>("#capture-ocr-btn");
 const stopCameraButton = document.querySelector<HTMLButtonElement>("#stop-camera-btn");
+const quitAppButton = document.querySelector<HTMLButtonElement>("#quit-app-btn");
 
 if (
   !appStateElement ||
+  !appModeElement ||
+  !runtimeStateElement ||
+  !runtimeMessageElement ||
   !cameraMessageElement ||
   !sampleStatusElement ||
   !ocrSummaryElement ||
@@ -142,7 +161,8 @@ if (
   !switchFacingButton ||
   !startCameraButton ||
   !captureOCRButton ||
-  !stopCameraButton
+  !stopCameraButton ||
+  !quitAppButton
 ) {
   throw new Error("Missing app elements");
 }
@@ -253,7 +273,7 @@ const resolveAndPlaySeatAudio = async (lookupName: string | null): Promise<SeatA
       resolvedSeat: null,
       sourceUrl: null,
       status: "skipped",
-      message: "skipped (no parsed name)"
+      message: "skipped (no parsed name)",
     };
   }
 
@@ -268,7 +288,7 @@ const resolveAndPlaySeatAudio = async (lookupName: string | null): Promise<SeatA
       resolvedSeat: null,
       sourceUrl: null,
       status: "error",
-      message: `error (${message})`
+      message: `error (${message})`,
     };
   }
 
@@ -280,7 +300,7 @@ const resolveAndPlaySeatAudio = async (lookupName: string | null): Promise<SeatA
       resolvedSeat: null,
       sourceUrl: null,
       status: "skipped",
-      message: `skipped (no CSV match for ${lookupName})`
+      message: `skipped (no CSV match for ${lookupName})`,
     };
   }
 
@@ -301,7 +321,7 @@ const resolveAndPlaySeatAudio = async (lookupName: string | null): Promise<SeatA
           activeSeatAudio = null;
         }
       },
-      { once: true }
+      { once: true },
     );
 
     return {
@@ -309,7 +329,7 @@ const resolveAndPlaySeatAudio = async (lookupName: string | null): Promise<SeatA
       resolvedSeat,
       sourceUrl,
       status: "playing",
-      message: `playing ${resolvedSeat}.wav`
+      message: `playing ${resolvedSeat}.wav`,
     };
   } catch (error) {
     if (activeSeatAudio === audio) {
@@ -322,15 +342,12 @@ const resolveAndPlaySeatAudio = async (lookupName: string | null): Promise<SeatA
       resolvedSeat,
       sourceUrl,
       status: "error",
-      message: `error (${message})`
+      message: `error (${message})`,
     };
   }
 };
 
-const updateDiagnosticsDisplay = (
-  response: OCRResponse | null,
-  parserDebug: ParserDebug | null
-): void => {
+const updateDiagnosticsDisplay = (response: OCRResponse | null, parserDebug: ParserDebug | null): void => {
   const path = response?.profiling?.path ?? "-";
   const requestId = response?.debug?.request_id ?? "-";
   const attemptNumber = response?.debug?.attempt_number;
@@ -349,18 +366,15 @@ const updateDiagnosticsDisplay = (
     {
       profiling: response?.profiling ?? null,
       debug: response?.debug ?? null,
-      parser: parserDebug ?? null
+      parser: parserDebug ?? null,
+      serviceState: response?.service_state ?? latestRuntimeStatus ?? null,
     },
     null,
-    2
+    2,
   );
 };
 
-const updateOCRDisplay = (
-  items: OCRItem[],
-  result: OCRResult | null,
-  parserDebug: ParserDebug | null
-): void => {
+const updateOCRDisplay = (items: OCRItem[], result: OCRResult | null, parserDebug: ParserDebug | null): void => {
   latestOCRItems = items;
   latestOCRResult = result;
 
@@ -423,15 +437,94 @@ const setSwitchFacingLabel = (): void => {
     preferredFacingMode === "environment" ? "Switch to Front Camera" : "Switch to Rear Camera";
 };
 
-const updateCameraControlsState = (enabled: boolean): void => {
-  cameraSelectElement.disabled = !enabled;
-  switchFacingButton.disabled = !enabled;
+const isRuntimeReady = (): boolean => Boolean(latestRuntimeStatus?.is_ready);
+
+const updateActionAvailability = (): void => {
+  const canStartCamera = hasCameraApi && isChrome && isRuntimeReady() && !cameraStream;
+  startCameraButton.disabled = !canStartCamera;
+  captureOCRButton.disabled = !cameraStream || isOCRInFlight || !isRuntimeReady();
+  stopCameraButton.disabled = !cameraStream;
+  cameraSelectElement.disabled = !cameraStream;
+  switchFacingButton.disabled = !cameraStream;
+  quitAppButton.hidden = !(latestRuntimeStatus?.packaged ?? false);
+  quitAppButton.disabled = !(latestRuntimeStatus?.packaged ?? false);
   setSwitchFacingLabel();
 };
 
-const populateCameraOptions = async (): Promise<void> => {
+const updateRuntimeDisplay = (status: RuntimeStatus | null): void => {
+  if (!status) {
+    appModeElement.textContent = "Waiting for backend";
+    runtimeStateElement.textContent = "Unavailable";
+    runtimeMessageElement.textContent = "Connecting to the local OCR service...";
+    updateActionAvailability();
+    return;
+  }
+
+  appModeElement.textContent = status.packaged ? "Packaged local app" : "Developer mode";
+  runtimeStateElement.textContent = `${status.state}${status.is_ready ? " (ready)" : ""}`;
+
+  let runtimeMessage = status.message;
+  if (status.error) {
+    runtimeMessage = `${status.message} Log file: ${status.log_file}`;
+  } else if (!status.is_ready && status.cached_models_present) {
+    runtimeMessage = `${status.message} Using cached models from ${status.model_cache_dir}.`;
+  } else if (!status.is_ready) {
+    runtimeMessage = `${status.message} Model cache directory: ${status.model_cache_dir}.`;
+  }
+
+  runtimeMessageElement.textContent = runtimeMessage;
+  updateActionAvailability();
+};
+
+const syncRuntimeStatus = (status: RuntimeStatus): void => {
+  latestRuntimeStatus = status;
+  updateRuntimeDisplay(status);
+
+  if (status.is_ready) {
+    void ensureNameSeatDirectory().catch(() => {
+      updateSeatAudioDisplay({
+        lookupName: null,
+        resolvedSeat: null,
+        sourceUrl: null,
+        status: "error",
+        message: "error (unable to preload names.csv)",
+      });
+    });
+  }
+};
+
+const scheduleRuntimePoll = (delayMs: number): void => {
+  if (runtimePollTimer !== null) {
+    window.clearTimeout(runtimePollTimer);
+  }
+
+  runtimePollTimer = window.setTimeout(() => {
+    void refreshRuntimeStatus();
+  }, delayMs);
+};
+
+const refreshRuntimeStatus = async (): Promise<void> => {
+  try {
+    const response = await fetch("/runtime/status", { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`/runtime/status returned ${response.status}`);
+    }
+
+    syncRuntimeStatus((await response.json()) as RuntimeStatus);
+  } catch (error) {
+    latestRuntimeStatus = null;
+    updateRuntimeDisplay(null);
+    runtimeMessageElement.textContent =
+      error instanceof Error ? `Runtime status check failed: ${error.message}` : "Runtime status check failed.";
+  } finally {
+    scheduleRuntimePoll(isRuntimeReady() ? 15000 : 1500);
+  }
+};
+
+const updateCameraControlsState = async (): Promise<void> => {
   if (!navigator.mediaDevices?.enumerateDevices) {
     cameraSelectElement.innerHTML = `<option value="">Default camera</option>`;
+    updateActionAvailability();
     return;
   }
 
@@ -440,6 +533,7 @@ const populateCameraOptions = async (): Promise<void> => {
 
   if (videoDevices.length === 0) {
     cameraSelectElement.innerHTML = `<option value="">No camera devices detected</option>`;
+    updateActionAvailability();
     return;
   }
 
@@ -457,6 +551,7 @@ const populateCameraOptions = async (): Promise<void> => {
   }
 
   cameraSelectElement.value = selectedCameraId ?? "";
+  updateActionAvailability();
 };
 
 const getVideoConstraints = (): MediaTrackConstraints => {
@@ -464,14 +559,14 @@ const getVideoConstraints = (): MediaTrackConstraints => {
     return {
       deviceId: { exact: selectedCameraId },
       width: { ideal: 1280 },
-      height: { ideal: 720 }
+      height: { ideal: 720 },
     };
   }
 
   return {
     facingMode: { ideal: preferredFacingMode },
     width: { ideal: 1280 },
-    height: { ideal: 720 }
+    height: { ideal: 720 },
   };
 };
 
@@ -503,9 +598,7 @@ const captureFrameBlob = async (): Promise<Blob | null> => {
 
 const sanitizeSeatText = (text: string): string => text.toUpperCase().replace(/[^A-Z0-9]/g, "");
 
-const parseResultFromOCRItems = (
-  items: OCRItem[]
-): { result: OCRResult | null; debug: ParserDebug } => {
+const parseResultFromOCRItems = (items: OCRItem[]): { result: OCRResult | null; debug: ParserDebug } => {
   if (items.length === 0) {
     return {
       result: null,
@@ -514,8 +607,8 @@ const parseResultFromOCRItems = (
         seatCandidates: [],
         nameCandidates: [],
         selectedSeat: null,
-        selectedName: null
-      }
+        selectedName: null,
+      },
     };
   }
 
@@ -551,8 +644,8 @@ const parseResultFromOCRItems = (
         seatCandidates,
         nameCandidates,
         selectedSeat,
-        selectedName: nameCandidates[0] ?? null
-      }
+        selectedName: nameCandidates[0] ?? null,
+      },
     };
   }
 
@@ -565,8 +658,8 @@ const parseResultFromOCRItems = (
         seatCandidates,
         nameCandidates,
         selectedSeat: null,
-        selectedName: nameCandidates[0] ?? null
-      }
+        selectedName: nameCandidates[0] ?? null,
+      },
     };
   }
 
@@ -582,8 +675,8 @@ const parseResultFromOCRItems = (
         seatCandidates,
         nameCandidates,
         selectedSeat: seat,
-        selectedName
-      }
+        selectedName,
+      },
     };
   }
 
@@ -596,8 +689,8 @@ const parseResultFromOCRItems = (
         seatCandidates,
         nameCandidates,
         selectedSeat: seat,
-        selectedName: null
-      }
+        selectedName: null,
+      },
     };
   }
 
@@ -609,16 +702,16 @@ const parseResultFromOCRItems = (
       confidence: {
         name: name.confidence,
         seat: seat.confidence,
-        combined
-      }
+        combined,
+      },
     },
     debug: {
       failureReason: null,
       seatCandidates,
       nameCandidates,
       selectedSeat: seat,
-      selectedName: name
-    }
+      selectedName: name,
+    },
   };
 };
 
@@ -634,17 +727,36 @@ const fetchOCRData = async (blob: Blob): Promise<OCRResponse> => {
     const response = await fetch(appConfig.ocrBackendUrl, {
       method: "POST",
       body: formData,
-      signal: controller.signal
+      signal: controller.signal,
     });
 
-    if (!response.ok) {
-      throw new Error(`OCR backend returned ${response.status}`);
+    let data: OCRResponse | null = null;
+    try {
+      data = (await response.json()) as OCRResponse;
+    } catch {
+      data = null;
     }
 
-    const data = (await response.json()) as OCRResponse;
+    if (data?.service_state) {
+      syncRuntimeStatus(data.service_state);
+    }
+
+    if (!response.ok) {
+      const message =
+        typeof data?.error === "string" && data.error.trim().length > 0
+          ? data.error
+          : `OCR backend returned ${response.status}`;
+      throw new Error(message);
+    }
+
+    if (data === null) {
+      throw new Error("OCR backend returned an unreadable response.");
+    }
+
     if (typeof data.error === "string" && data.error.trim().length > 0) {
       throw new Error(`OCR backend error: ${data.error}`);
     }
+
     return data;
   } finally {
     window.clearTimeout(timeoutId);
@@ -656,6 +768,11 @@ const captureAndSendOCR = async (): Promise<void> => {
     return;
   }
 
+  if (!isRuntimeReady()) {
+    setCameraMessage(latestRuntimeStatus?.message ?? "OCR runtime is not ready yet.");
+    return;
+  }
+
   const blob = await captureFrameBlob();
   if (!blob) {
     setCameraMessage("No video frame available yet. Wait for the preview to load and try again.");
@@ -664,7 +781,7 @@ const captureAndSendOCR = async (): Promise<void> => {
 
   scanController.setState("Scanning");
   isOCRInFlight = true;
-  captureOCRButton.disabled = true;
+  updateActionAvailability();
   setSampleStatus("sending");
 
   try {
@@ -699,7 +816,7 @@ const captureAndSendOCR = async (): Promise<void> => {
       resolvedSeat: null,
       sourceUrl: null,
       status: "error",
-      message: "error (OCR request failed before audio lookup)"
+      message: "error (OCR request failed before audio lookup)",
     });
     if (error instanceof DOMException && error.name === "AbortError") {
       setCameraMessage(`OCR request timed out after ${Math.max(500, appConfig.scanTimeoutMs)}ms.`);
@@ -709,28 +826,22 @@ const captureAndSendOCR = async (): Promise<void> => {
     setSampleStatus("failed");
   } finally {
     isOCRInFlight = false;
-    captureOCRButton.disabled = !cameraStream;
+    updateActionAvailability();
   }
 };
 
 const stopPreview = (): void => {
   isOCRInFlight = false;
   setSampleStatus("idle");
-  captureOCRButton.disabled = true;
 
-  if (!cameraStream) {
-    return;
-  }
-
-  for (const track of cameraStream.getTracks()) {
-    track.stop();
+  if (cameraStream) {
+    for (const track of cameraStream.getTracks()) {
+      track.stop();
+    }
   }
 
   cameraStream = null;
   previewElement.srcObject = null;
-  stopCameraButton.disabled = true;
-  startCameraButton.disabled = !hasCameraApi || !isChrome;
-  updateCameraControlsState(hasCameraApi && isChrome);
   scanController.setState("Ready");
   stopSeatAudioPlayback();
   updateSeatAudioDisplay({
@@ -738,9 +849,10 @@ const stopPreview = (): void => {
     resolvedSeat: null,
     sourceUrl: null,
     status: "idle",
-    message: "idle"
+    message: "idle",
   });
   setCameraMessage("Camera preview stopped.");
+  updateActionAvailability();
 };
 
 const startPreview = async (): Promise<void> => {
@@ -752,7 +864,13 @@ const startPreview = async (): Promise<void> => {
 
   if (!isChrome) {
     scanController.setState("RetryNeeded");
-    setCameraMessage("MVP camera flow is currently supported on desktop Chrome only.");
+    setCameraMessage("Camera scanning is currently supported on desktop Chrome only.");
+    return;
+  }
+
+  if (!isRuntimeReady()) {
+    scanController.setState("RetryNeeded");
+    setCameraMessage(latestRuntimeStatus?.message ?? "OCR runtime is still starting.");
     return;
   }
 
@@ -762,7 +880,7 @@ const startPreview = async (): Promise<void> => {
 
     cameraStream = await navigator.mediaDevices.getUserMedia({
       video: getVideoConstraints(),
-      audio: false
+      audio: false,
     });
 
     previewElement.srcObject = cameraStream;
@@ -779,28 +897,56 @@ const startPreview = async (): Promise<void> => {
       }
     }
 
-    await populateCameraOptions();
+    await updateCameraControlsState();
 
     scanController.setState("Scanning");
     setSampleStatus("idle");
     setCameraMessage("Camera preview active. Press Capture to send one image to OCR.");
-    captureOCRButton.disabled = false;
-    stopCameraButton.disabled = false;
-    updateCameraControlsState(true);
+    updateActionAvailability();
   } catch (error) {
     setSampleStatus("idle");
-    captureOCRButton.disabled = true;
     scanController.setState("RetryNeeded");
-    startCameraButton.disabled = false;
-    updateCameraControlsState(hasCameraApi && isChrome);
     setCameraMessage(error instanceof Error ? `Unable to start camera: ${error.message}` : "Unable to start camera.");
+    updateActionAvailability();
+  }
+};
+
+const requestShutdown = async (): Promise<void> => {
+  if (!(latestRuntimeStatus?.packaged ?? false)) {
+    return;
+  }
+
+  quitAppButton.disabled = true;
+
+  try {
+    const response = await fetch("/shutdown", {
+      method: "POST",
+    });
+
+    if (!response.ok) {
+      throw new Error(`/shutdown returned ${response.status}`);
+    }
+
+    runtimeMessageElement.textContent = "Application is shutting down...";
+    stopPreview();
+  } catch (error) {
+    runtimeMessageElement.textContent =
+      error instanceof Error ? `Quit request failed: ${error.message}` : "Quit request failed.";
+    quitAppButton.disabled = false;
   }
 };
 
 scanController.subscribe(setAppState);
-startCameraButton.disabled = !hasCameraApi || !isChrome;
-updateCameraControlsState(hasCameraApi && isChrome);
-void populateCameraOptions();
+updateRuntimeDisplay(null);
+updateSeatAudioDisplay({
+  lookupName: null,
+  resolvedSeat: null,
+  sourceUrl: null,
+  status: "idle",
+  message: "idle",
+});
+void updateCameraControlsState();
+void refreshRuntimeStatus();
 
 startCameraButton.addEventListener("click", () => {
   void startPreview();
@@ -811,6 +957,10 @@ captureOCRButton.addEventListener("click", () => {
 });
 
 stopCameraButton.addEventListener("click", stopPreview);
+
+quitAppButton.addEventListener("click", () => {
+  void requestShutdown();
+});
 
 cameraSelectElement.addEventListener("change", () => {
   selectedCameraId = cameraSelectElement.value || null;
@@ -823,7 +973,7 @@ cameraSelectElement.addEventListener("change", () => {
 switchFacingButton.addEventListener("click", () => {
   preferredFacingMode = preferredFacingMode === "environment" ? "user" : "environment";
   selectedCameraId = null;
-  void populateCameraOptions();
+  void updateCameraControlsState();
 
   if (cameraStream) {
     stopPreview();
@@ -834,17 +984,12 @@ switchFacingButton.addEventListener("click", () => {
 });
 
 navigator.mediaDevices?.addEventListener?.("devicechange", () => {
-  void populateCameraOptions();
+  void updateCameraControlsState();
 });
 
-void ensureNameSeatDirectory().catch(() => {
-  updateSeatAudioDisplay({
-    lookupName: null,
-    resolvedSeat: null,
-    sourceUrl: null,
-    status: "error",
-    message: "error (unable to preload names.csv)"
-  });
+window.addEventListener("beforeunload", () => {
+  if (runtimePollTimer !== null) {
+    window.clearTimeout(runtimePollTimer);
+  }
+  stopPreview();
 });
-
-window.addEventListener("beforeunload", stopPreview);

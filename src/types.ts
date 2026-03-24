@@ -52,6 +52,24 @@ export type OCRResponse = {
   results?: OCRItem[];
   profiling?: OCRProfiling;
   debug?: OCRDebug;
+  service_state?: RuntimeStatus;
+};
+
+export type RuntimeState = "starting" | "downloading_models" | "loading_models" | "ready" | "error";
+
+export type RuntimeStatus = {
+  state: RuntimeState;
+  message: string;
+  error?: string | null;
+  is_ready: boolean;
+  packaged: boolean;
+  frontend_ready: boolean;
+  frontend_root: string;
+  app_data_dir: string;
+  model_cache_dir: string;
+  log_file: string;
+  cached_models_present: boolean;
+  last_state_change_utc: string;
 };
 
 export type AudioSourceType = "preRecorded" | "tts";
