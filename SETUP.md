@@ -12,7 +12,7 @@ This project now supports three practical ways to run it:
 
 ## Prerequisites
 
-- Python 3.11 recommended
+- Python 3.12 recommended
 - Node.js 18+ and npm
 - Desktop Chrome with camera permission for scanning
 - Optional: Docker for backend-only runs
@@ -88,7 +88,7 @@ Open the Vite URL shown in terminal, typically `http://127.0.0.1:5173`, in deskt
 
 ```powershell
 cd C:\path\to\proj_ocr\backend
-py -3.11 -m venv .venv
+py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -r requirements.txt
@@ -163,7 +163,7 @@ This produces the one-click Windows app path that the repo now targets.
 
 ```powershell
 cd C:\path\to\proj_ocr
-py -3.11 -m venv backend\.venv
+py -3.12 -m venv backend\.venv
 .\backend\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -r backend\requirements.txt
@@ -226,7 +226,7 @@ docker run --rm -p 8000:8000 -e PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True paddl
 - If frontend requests fail in dev mode, confirm the backend is running on port `8000`.
 - If production-style local mode serves a 404 at `/`, run `npm run build` first so `dist/` exists.
 - If camera preview fails, use desktop Chrome and allow camera access.
-- If Python package installation fails on Windows, confirm Python 3.11 and an activated virtual environment.
+- If Python package installation fails on Windows, confirm Python 3.12 and an activated virtual environment.
 - If packaged startup fails on Windows, inspect `%LOCALAPPDATA%\OCRTicketReader\logs\backend.log`.
 - If backend verification fails, confirm the image path points to a real local file.
 - If `docker compose build` fails early, check whether your Docker install includes Compose build support or use the plain `docker build` fallback.

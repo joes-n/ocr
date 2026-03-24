@@ -56,7 +56,7 @@ The backend initializes PaddleOCR asynchronously. On first launch, `/runtime/sta
 
 ## Prerequisites
 
-- Python 3.11 recommended for the backend
+- Python 3.12 recommended for the backend
 - Node.js 18+ and npm for the frontend/build
 - Desktop Chrome for camera capture
 - Optional: Docker for backend-only container runs
@@ -134,7 +134,7 @@ Typical packaging flow on Windows:
 ```powershell
 cd C:\path\to\proj_ocr
 npm install
-py -3.11 -m venv backend\.venv
+py -3.12 -m venv backend\.venv
 .\backend\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -r backend\requirements.txt
