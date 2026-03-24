@@ -55,7 +55,7 @@ try {
         $SpecRoot\ocr_launcher.spec
 
     Copy-Item "$PyInstallerDist\ocr-backend" "$BundleRoot\ocr-backend" -Recurse -Force
-    Copy-Item "$PyInstallerDist\ocr-ticket-reader\ocr-ticket-reader.exe" "$BundleRoot\ocr-ticket-reader.exe" -Force
+    Copy-Item "$PyInstallerDist\ocr-ticket-reader.exe" "$BundleRoot\ocr-ticket-reader.exe" -Force
 
     if (-not [string]::IsNullOrWhiteSpace($InnoSetupCompiler)) {
         & $InnoSetupCompiler `

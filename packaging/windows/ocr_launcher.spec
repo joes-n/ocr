@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-SPEC_ROOT = Path(__file__).resolve().parent
+SPEC_ROOT = Path(SPECPATH)
 REPO_ROOT = SPEC_ROOT.parents[1]
 LAUNCHER_ENTRY = REPO_ROOT / "backend" / "launcher.py"
 
@@ -23,21 +23,13 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
     name="ocr-ticket-reader",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
     console=False,
-)
-
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=False,
-    name="ocr-ticket-reader",
 )

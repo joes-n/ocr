@@ -3,7 +3,7 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
 
-SPEC_ROOT = Path(__file__).resolve().parent
+SPEC_ROOT = Path(SPECPATH)
 REPO_ROOT = SPEC_ROOT.parents[1]
 BACKEND_ENTRY = REPO_ROOT / "backend" / "main.py"
 DIST_DIR = REPO_ROOT / "dist"
