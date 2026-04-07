@@ -200,6 +200,31 @@ const updateSeatAudioDisplay = (result: SeatAudioResult): void => {
   audioStatusElement.innerHTML = `<strong>Seat audio:</strong> ${result.message}`;
 };
 
+const getPackagedAssetHint = (): string | null => {
+  if (!(latestRuntimeStatus?.packaged ?? false)) {
+    return null;
+  }
+
+  return `Editable assets: ${latestRuntimeStatus.seat_assets_dir}`;
+};
+
+const withPackagedAssetHint = (message: string): string => {
+  const assetHint = getPackagedAssetHint();
+  if (!assetHint || message.includes(assetHint)) {
+    return message;
+  }
+
+  return `${message}. ${assetHint}`;
+};
+
+const getPackagedNamesCsvSetupMessage = (): string | null => {
+  if (!(latestRuntimeStatus?.packaged ?? false)) {
+    return null;
+  }
+
+  return `add names.csv at ${latestRuntimeStatus.names_csv_path} and seat WAV files under ${latestRuntimeStatus.audio_assets_dir}`;
+};
+
 const stopSeatAudioPlayback = (): void => {
   if (!activeSeatAudio) {
     return;
@@ -245,11 +270,12 @@ const parseNameSeatDirectory = (csvText: string): Map<string, string> => {
 
 const loadNameSeatDirectory = async (): Promise<Map<string, string>> => {
   const response = await fetch("/names.csv", { cache: "no-store" });
+  const responseText = await response.text();
   if (!response.ok) {
-    throw new Error(`names.csv returned ${response.status}`);
+    throw new Error(responseText.trim() || `names.csv returned ${response.status}`);
   }
 
-  return parseNameSeatDirectory(await response.text());
+  return parseNameSeatDirectory(responseText);
 };
 
 const ensureNameSeatDirectory = async (): Promise<Map<string, string>> => {
@@ -282,7 +308,7 @@ const resolveAndPlaySeatAudio = async (lookupName: string | null): Promise<SeatA
     directory = await ensureNameSeatDirectory();
   } catch (error) {
     stopSeatAudioPlayback();
-    const message = error instanceof Error ? error.message : "Unable to load names.csv";
+    const message = withPackagedAssetHint(error instanceof Error ? error.message : "Unable to load names.csv");
     return {
       lookupName,
       resolvedSeat: null,
@@ -336,13 +362,18 @@ const resolveAndPlaySeatAudio = async (lookupName: string | null): Promise<SeatA
       activeSeatAudio = null;
     }
 
-    const message = error instanceof Error ? error.message : "Audio playback failed";
+    const packagedSetupMessage = getPackagedNamesCsvSetupMessage();
+    const message = packagedSetupMessage
+      ? `unable to play ${resolvedSeat}.wav; add it under ${latestRuntimeStatus?.audio_assets_dir}`
+      : error instanceof Error
+        ? error.message
+        : "Audio playback failed";
     return {
       lookupName,
       resolvedSeat,
       sourceUrl,
       status: "error",
-      message: `error (${message})`,
+      message: `error (${withPackagedAssetHint(message)})`,
     };
   }
 };
@@ -472,6 +503,10 @@ const updateRuntimeDisplay = (status: RuntimeStatus | null): void => {
     runtimeMessage = `${status.message} Model cache directory: ${status.model_cache_dir}.`;
   }
 
+  if (status.packaged && !status.names_csv_present) {
+    runtimeMessage = `${runtimeMessage} Add names.csv at ${status.names_csv_path}. Put seat WAV files under ${status.audio_assets_dir}.`;
+  }
+
   runtimeMessageElement.textContent = runtimeMessage;
   updateActionAvailability();
 };
@@ -481,13 +516,25 @@ const syncRuntimeStatus = (status: RuntimeStatus): void => {
   updateRuntimeDisplay(status);
 
   if (status.is_ready) {
+    if (status.packaged && !status.names_csv_present) {
+      nameSeatDirectoryPromise = null;
+      updateSeatAudioDisplay({
+        lookupName: null,
+        resolvedSeat: null,
+        sourceUrl: null,
+        status: "error",
+        message: `error (${getPackagedNamesCsvSetupMessage() ?? "unable to preload names.csv"})`,
+      });
+      return;
+    }
+
     void ensureNameSeatDirectory().catch(() => {
       updateSeatAudioDisplay({
         lookupName: null,
         resolvedSeat: null,
         sourceUrl: null,
         status: "error",
-        message: "error (unable to preload names.csv)",
+        message: `error (${withPackagedAssetHint("unable to preload names.csv")})`,
       });
     });
   }

@@ -9,7 +9,7 @@ When the parsed name exactly matches `Chinese Name` in `names.csv`, the frontend
 - Frontend: Vite + TypeScript app in `src/`
 - Backend: FastAPI + PaddleOCR service in `backend/main.py`
 - Dev mode: Vite serves the UI and proxies `/ocr`, `/runtime`, `/healthz`, and `/shutdown` to `http://127.0.0.1:8000`
-- Production-style mode: the backend serves the built frontend from `dist/`
+- Production-style mode: the backend serves the built frontend from `dist/` and serves `names.csv`/`audio/` from the repo root
 - Browser target: desktop Chrome with camera access
 - Windows packaging path: launcher + PyInstaller + Inno Setup assets in `packaging/windows/`
 
@@ -49,7 +49,7 @@ There is no sample ticket image checked into this repo anymore. Any backend veri
 
 - `POST /ocr`: OCR request endpoint
 - `GET /healthz`: lightweight process health endpoint
-- `GET /runtime/status`: OCR-model readiness and packaged-app runtime state
+- `GET /runtime/status`: OCR-model readiness, packaged-app runtime state, and seat-asset paths
 - `POST /shutdown`: localhost-only shutdown endpoint, enabled only in packaged mode
 
 The backend initializes PaddleOCR asynchronously. On first launch, `/runtime/status` may report `starting`, `downloading_models`, or `loading_models` before it reaches `ready`.
@@ -175,6 +175,8 @@ In packaged mode on Windows, app data defaults to `%LOCALAPPDATA%\OCRTicketReade
 
 - Keep `names.csv` at repo root with header `Seat No,Chinese Name`.
 - Put seat WAV files in repo-root `audio/`, named exactly like the CSV seat number, for example `audio/6E53.wav`.
+- In the packaged Windows app, editable runtime copies live under `%LOCALAPPDATA%\OCRTicketReader\assets`.
+- On first packaged launch, bundled starter assets are copied there only when the destination file is missing.
 - If there is no CSV match or no WAV file, audio playback is skipped gracefully.
 
 ## Docker

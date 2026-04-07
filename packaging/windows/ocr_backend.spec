@@ -12,6 +12,8 @@ SPEC_ROOT = Path(SPECPATH)
 REPO_ROOT = SPEC_ROOT.parents[1]
 BACKEND_ENTRY = REPO_ROOT / "backend" / "main.py"
 DIST_DIR = REPO_ROOT / "dist"
+NAMES_CSV = REPO_ROOT / "names.csv"
+AUDIO_DIR = REPO_ROOT / "audio"
 
 datas = []
 binaries = []
@@ -44,6 +46,16 @@ def add_import_package(package_name):
 
 if DIST_DIR.is_dir():
     datas.append((str(DIST_DIR), "dist"))
+
+if NAMES_CSV.is_file():
+    datas.append((str(NAMES_CSV), "seed-assets"))
+
+if AUDIO_DIR.is_dir():
+    for audio_file in AUDIO_DIR.rglob("*"):
+        if not audio_file.is_file():
+            continue
+        destination = Path("seed-assets") / "audio" / audio_file.relative_to(AUDIO_DIR).parent
+        datas.append((str(audio_file), str(destination)))
 
 # Core app/runtime metadata.
 for distribution_name in [

@@ -6,33 +6,6 @@ const repoRoot = __dirname;
 const namesCsvPath = path.join(repoRoot, "names.csv");
 const audioDirectoryPath = path.join(repoRoot, "audio");
 
-const writeFileIfPresent = (sourcePath: string, destinationPath: string): void => {
-  if (!fs.existsSync(sourcePath)) {
-    return;
-  }
-
-  fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
-  fs.copyFileSync(sourcePath, destinationPath);
-};
-
-const copyDirectoryIfPresent = (sourcePath: string, destinationPath: string): void => {
-  if (!fs.existsSync(sourcePath)) {
-    return;
-  }
-
-  fs.mkdirSync(destinationPath, { recursive: true });
-  for (const entry of fs.readdirSync(sourcePath, { withFileTypes: true })) {
-    const sourceEntry = path.join(sourcePath, entry.name);
-    const destinationEntry = path.join(destinationPath, entry.name);
-    if (entry.isDirectory()) {
-      copyDirectoryIfPresent(sourceEntry, destinationEntry);
-      continue;
-    }
-
-    fs.copyFileSync(sourceEntry, destinationEntry);
-  }
-};
-
 const repoStaticAssetsPlugin = (): Plugin => ({
   name: "repo-static-assets",
   configureServer(server) {
@@ -69,11 +42,6 @@ const repoStaticAssetsPlugin = (): Plugin => ({
 
       next();
     });
-  },
-  writeBundle(options) {
-    const outputDirectory = options.dir ? path.resolve(repoRoot, options.dir) : path.join(repoRoot, "dist");
-    writeFileIfPresent(namesCsvPath, path.join(outputDirectory, "names.csv"));
-    copyDirectoryIfPresent(audioDirectoryPath, path.join(outputDirectory, "audio"));
   }
 });
 

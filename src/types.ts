@@ -68,6 +68,11 @@ export type RuntimeStatus = {
   app_data_dir: string;
   model_cache_dir: string;
   log_file: string;
+  seat_assets_dir: string;
+  names_csv_path: string;
+  names_csv_present: boolean;
+  audio_assets_dir: string;
+  audio_assets_present: boolean;
   cached_models_present: boolean;
   last_state_change_utc: string;
 };

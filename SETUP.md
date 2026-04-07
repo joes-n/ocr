@@ -153,7 +153,7 @@ python main.py
 
 Open `http://127.0.0.1:8000` in desktop Chrome.
 
-The backend will serve `dist/`, `names.csv`, and `audio/` assets from the built app output.
+The backend will serve `dist/` from the build output and will read `names.csv` and `audio/` directly from the repo root.
 
 ## Windows Packaged Build
 
@@ -198,6 +198,8 @@ The PowerShell build script:
 - The browser opens automatically once `GET /healthz` responds
 - The UI polls `GET /runtime/status` until OCR reaches `ready`
 - Packaged app data defaults to `%LOCALAPPDATA%\OCRTicketReader`
+- Editable seat assets live under `%LOCALAPPDATA%\OCRTicketReader\assets`
+- On first launch, packaged starter `names.csv` and `audio\` files are copied there only if they were bundled and the destination file is missing
 
 ## Optional: Backend with Docker
 

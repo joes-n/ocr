@@ -8,3 +8,4 @@ venv/
 ocr_debug/
 names.csv
 *.wav
+specs/

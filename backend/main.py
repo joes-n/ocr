@@ -5,6 +5,7 @@ from pathlib import Path
 import json
 import logging
 import os
+import shutil
 import sys
 import threading
 import time
@@ -14,7 +15,7 @@ import uuid
 import cv2
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 import numpy as np
 
 
@@ -43,7 +44,11 @@ APP_DATA_DIR = Path(os.environ.get("OCR_APP_DATA_DIR", "")).expanduser() if os.e
 MODEL_CACHE_DIR = APP_DATA_DIR / "models"
 LOG_DIR = APP_DATA_DIR / "logs"
 TMP_DIR = APP_DATA_DIR / "tmp"
+PACKAGED_ASSETS_DIR = APP_DATA_DIR / "assets"
+PACKAGED_AUDIO_DIR = PACKAGED_ASSETS_DIR / "audio"
 FRONTEND_DIST_DIR = RESOURCE_ROOT / "dist"
+SEED_ASSETS_DIR = RESOURCE_ROOT / "seed-assets"
+SEED_AUDIO_DIR = SEED_ASSETS_DIR / "audio"
 LOG_FILE_PATH = LOG_DIR / "backend.log"
 STATIC_EXCLUDE_PREFIXES = {
     "docs",
@@ -99,6 +104,7 @@ from paddleocr import PaddleOCR
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    _seed_packaged_assets()
     logger.info("App startup: resource_root=%s packaged=%s", RESOURCE_ROOT, PACKAGED_MODE)
     runtime_manager.start()
     yield
@@ -152,6 +158,8 @@ class OCRRuntimeManager:
             self._thread.start()
 
     def status(self) -> dict:
+        names_csv_path = _names_csv_path()
+        audio_assets_dir = _audio_assets_dir()
         with self._lock:
             return {
                 "state": self._state,
@@ -164,6 +172,11 @@ class OCRRuntimeManager:
                 "app_data_dir": str(APP_DATA_DIR),
                 "model_cache_dir": str(self._model_cache_dir),
                 "log_file": str(LOG_FILE_PATH),
+                "seat_assets_dir": str(PACKAGED_ASSETS_DIR if PACKAGED_MODE else RESOURCE_ROOT),
+                "names_csv_path": str(names_csv_path),
+                "names_csv_present": names_csv_path.is_file(),
+                "audio_assets_dir": str(audio_assets_dir),
+                "audio_assets_present": audio_assets_dir.is_dir() and any(audio_assets_dir.rglob("*.wav")),
                 "cached_models_present": self._cached_models_present(),
                 "last_state_change_utc": _utc_timestamp(self._last_state_change),
             }
@@ -234,6 +247,76 @@ class OCRRuntimeManager:
 
 
 runtime_manager = OCRRuntimeManager(MODEL_CACHE_DIR)
+
+
+def _names_csv_path() -> Path:
+    if PACKAGED_MODE:
+        return PACKAGED_ASSETS_DIR / "names.csv"
+    return RESOURCE_ROOT / "names.csv"
+
+
+def _audio_assets_dir() -> Path:
+    if PACKAGED_MODE:
+        return PACKAGED_AUDIO_DIR
+    return RESOURCE_ROOT / "audio"
+
+
+def _seed_packaged_assets() -> None:
+    if not PACKAGED_MODE:
+        return
+
+    PACKAGED_ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+    PACKAGED_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+
+    seed_names_csv = SEED_ASSETS_DIR / "names.csv"
+    destination_names_csv = _names_csv_path()
+    if seed_names_csv.is_file() and not destination_names_csv.exists():
+        shutil.copy2(seed_names_csv, destination_names_csv)
+        logger.info("Seeded packaged names.csv to %s", destination_names_csv)
+
+    if not SEED_AUDIO_DIR.is_dir():
+        return
+
+    for seed_file in SEED_AUDIO_DIR.rglob("*"):
+        if not seed_file.is_file():
+            continue
+
+        destination_file = PACKAGED_AUDIO_DIR / seed_file.relative_to(SEED_AUDIO_DIR)
+        if destination_file.exists():
+            continue
+
+        destination_file.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(seed_file, destination_file)
+        logger.info("Seeded packaged audio asset to %s", destination_file)
+
+
+def _audio_asset_file(relative_path: str) -> Path | None:
+    normalized = relative_path.strip().strip("/\\")
+    if not normalized:
+        return None
+
+    asset_root = _audio_assets_dir()
+    candidate = (asset_root / normalized).resolve()
+    try:
+        candidate.relative_to(asset_root.resolve())
+    except ValueError:
+        return None
+
+    return candidate if candidate.is_file() else None
+
+
+def _missing_names_csv_message() -> str:
+    path = _names_csv_path()
+    if PACKAGED_MODE:
+        return f"names.csv not found. Add it at {path}"
+    return f"names.csv not found at {path}"
+
+
+def _missing_audio_message(relative_path: str) -> str:
+    asset_root = _audio_assets_dir()
+    if PACKAGED_MODE:
+        return f"Audio file not found. Add {relative_path} under {asset_root}"
+    return f"Audio file not found at {asset_root / relative_path}"
 
 
 def _rounded(value: float, digits: int = 4) -> float:
@@ -502,6 +585,24 @@ async def healthz():
 @app.get("/runtime/status")
 async def runtime_status():
     return runtime_manager.status()
+
+
+@app.get("/names.csv", include_in_schema=False)
+async def names_csv():
+    names_csv_file = _names_csv_path()
+    if not names_csv_file.is_file():
+        return PlainTextResponse(_missing_names_csv_message(), status_code=404)
+
+    return FileResponse(names_csv_file, media_type="text/csv; charset=utf-8")
+
+
+@app.get("/audio/{asset_path:path}", include_in_schema=False)
+async def audio_asset(asset_path: str):
+    audio_file = _audio_asset_file(asset_path)
+    if audio_file is None:
+        return PlainTextResponse(_missing_audio_message(asset_path), status_code=404)
+
+    return FileResponse(audio_file)
 
 
 @app.post("/ocr")
