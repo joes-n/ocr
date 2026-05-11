@@ -30,6 +30,11 @@ let isOCRInFlight = false;
 let activeSeatAudio: HTMLAudioElement | null = null;
 let nameSeatDirectoryPromise: Promise<Map<string, string>> | null = null;
 let runtimePollTimer: number | null = null;
+let continuousScanEnabled = false;
+let continuousScanTimer: number | null = null;
+let lastContinuousAudioSeat: string | null = null;
+
+const CONTINUOUS_SCAN_INTERVAL_MS = 1000;
 
 const plannedAudioOutput: AudioResolution = {
   playbackRate: appConfig.audioPlaybackRate,
@@ -59,6 +64,7 @@ app.innerHTML = `
       <p><strong>Queued audio segments:</strong> ${plannedAudioOutput.segments.length}</p>
       <p id="camera-message">Camera preview not started.</p>
       <p id="sample-status"><strong>OCR request:</strong> idle</p>
+      <p id="scan-mode-status"><strong>Scan mode:</strong> One click</p>
 
       <div class="camera-controls">
         <label for="camera-select"><strong>Camera:</strong></label>
@@ -100,6 +106,7 @@ app.innerHTML = `
       <div class="actions">
         <button id="start-camera-btn" type="button" disabled>Enable Camera</button>
         <button id="capture-ocr-btn" type="button" disabled>Capture &amp; Send to OCR</button>
+        <button id="toggle-continuous-scan-btn" type="button" disabled>Start Continuous Scan</button>
         <button id="stop-camera-btn" type="button" disabled>Stop Camera</button>
         <button id="quit-app-btn" type="button" hidden disabled>Quit App</button>
       </div>
@@ -113,6 +120,7 @@ const runtimeStateElement = document.querySelector<HTMLSpanElement>("#backend-ru
 const runtimeMessageElement = document.querySelector<HTMLParagraphElement>("#runtime-message");
 const cameraMessageElement = document.querySelector<HTMLParagraphElement>("#camera-message");
 const sampleStatusElement = document.querySelector<HTMLParagraphElement>("#sample-status");
+const scanModeStatusElement = document.querySelector<HTMLParagraphElement>("#scan-mode-status");
 const ocrSummaryElement = document.querySelector<HTMLParagraphElement>("#ocr-summary");
 const previewElement = document.querySelector<HTMLVideoElement>("#camera-preview");
 const resultNameElement = document.querySelector<HTMLParagraphElement>("#result-name");
@@ -132,6 +140,7 @@ const cameraSelectElement = document.querySelector<HTMLSelectElement>("#camera-s
 const switchFacingButton = document.querySelector<HTMLButtonElement>("#switch-facing-btn");
 const startCameraButton = document.querySelector<HTMLButtonElement>("#start-camera-btn");
 const captureOCRButton = document.querySelector<HTMLButtonElement>("#capture-ocr-btn");
+const toggleContinuousScanButton = document.querySelector<HTMLButtonElement>("#toggle-continuous-scan-btn");
 const stopCameraButton = document.querySelector<HTMLButtonElement>("#stop-camera-btn");
 const quitAppButton = document.querySelector<HTMLButtonElement>("#quit-app-btn");
 
@@ -142,6 +151,7 @@ if (
   !runtimeMessageElement ||
   !cameraMessageElement ||
   !sampleStatusElement ||
+  !scanModeStatusElement ||
   !ocrSummaryElement ||
   !previewElement ||
   !resultNameElement ||
@@ -161,6 +171,7 @@ if (
   !switchFacingButton ||
   !startCameraButton ||
   !captureOCRButton ||
+  !toggleContinuousScanButton ||
   !stopCameraButton ||
   !quitAppButton
 ) {
@@ -193,6 +204,13 @@ const setCameraMessage = (message: string): void => {
 
 const setSampleStatus = (message: string): void => {
   sampleStatusElement.innerHTML = `<strong>OCR request:</strong> ${message}`;
+};
+
+const updateScanModeStatus = (): void => {
+  scanModeStatusElement.innerHTML = `<strong>Scan mode:</strong> ${
+    continuousScanEnabled ? `Continuous (${CONTINUOUS_SCAN_INTERVAL_MS}ms)` : "One click"
+  }`;
+  toggleContinuousScanButton.textContent = continuousScanEnabled ? "Stop Continuous Scan" : "Start Continuous Scan";
 };
 
 const updateSeatAudioDisplay = (result: SeatAudioResult): void => {
@@ -233,6 +251,20 @@ const stopSeatAudioPlayback = (): void => {
   activeSeatAudio.pause();
   activeSeatAudio.currentTime = 0;
   activeSeatAudio = null;
+};
+
+const clearContinuousScanTimer = (): void => {
+  if (continuousScanTimer !== null) {
+    window.clearTimeout(continuousScanTimer);
+    continuousScanTimer = null;
+  }
+};
+
+const disableContinuousScan = (): void => {
+  continuousScanEnabled = false;
+  clearContinuousScanTimer();
+  lastContinuousAudioSeat = null;
+  updateScanModeStatus();
 };
 
 const parseNameSeatDirectory = (csvText: string): Map<string, string> => {
@@ -291,7 +323,10 @@ const ensureNameSeatDirectory = async (): Promise<Map<string, string>> => {
 
 const buildSeatAudioUrl = (seatNumber: string): string => `/audio/${encodeURIComponent(seatNumber)}.wav`;
 
-const resolveAndPlaySeatAudio = async (lookupName: string | null): Promise<SeatAudioResult> => {
+const resolveAndPlaySeatAudio = async (
+  lookupName: string | null,
+  options: { suppressSeatPlayback?: string | null } = {}
+): Promise<SeatAudioResult> => {
   if (!lookupName) {
     stopSeatAudioPlayback();
     return {
@@ -327,6 +362,16 @@ const resolveAndPlaySeatAudio = async (lookupName: string | null): Promise<SeatA
       sourceUrl: null,
       status: "skipped",
       message: `skipped (no CSV match for ${lookupName})`,
+    };
+  }
+
+  if (options.suppressSeatPlayback && resolvedSeat === options.suppressSeatPlayback) {
+    return {
+      lookupName,
+      resolvedSeat,
+      sourceUrl: buildSeatAudioUrl(resolvedSeat),
+      status: "skipped",
+      message: `skipped (already played ${resolvedSeat}.wav in continuous mode)`,
     };
   }
 
@@ -473,13 +518,17 @@ const isRuntimeReady = (): boolean => Boolean(latestRuntimeStatus?.is_ready);
 const updateActionAvailability = (): void => {
   const canStartCamera = hasCameraApi && isChrome && isRuntimeReady() && !cameraStream;
   startCameraButton.disabled = !canStartCamera;
-  captureOCRButton.disabled = !cameraStream || isOCRInFlight || !isRuntimeReady();
+  captureOCRButton.disabled = !cameraStream || isOCRInFlight || !isRuntimeReady() || continuousScanEnabled;
+  toggleContinuousScanButton.disabled = continuousScanEnabled
+    ? !cameraStream
+    : !cameraStream || isOCRInFlight || !isRuntimeReady();
   stopCameraButton.disabled = !cameraStream;
   cameraSelectElement.disabled = !cameraStream;
   switchFacingButton.disabled = !cameraStream;
   quitAppButton.hidden = !(latestRuntimeStatus?.packaged ?? false);
   quitAppButton.disabled = !(latestRuntimeStatus?.packaged ?? false);
   setSwitchFacingLabel();
+  updateScanModeStatus();
 };
 
 const updateRuntimeDisplay = (status: RuntimeStatus | null): void => {
@@ -810,19 +859,63 @@ const fetchOCRData = async (blob: Blob): Promise<OCRResponse> => {
   }
 };
 
-const captureAndSendOCR = async (): Promise<void> => {
+const scheduleContinuousScan = (): void => {
+  if (!continuousScanEnabled) {
+    return;
+  }
+
+  clearContinuousScanTimer();
+  continuousScanTimer = window.setTimeout(() => {
+    void captureAndSendOCR({ initiatedByContinuousScan: true });
+  }, CONTINUOUS_SCAN_INTERVAL_MS);
+};
+
+const setContinuousScanEnabled = (enabled: boolean): void => {
+  if (!enabled) {
+    disableContinuousScan();
+    updateActionAvailability();
+    return;
+  }
+
+  if (!cameraStream || !isRuntimeReady()) {
+    setCameraMessage("Continuous scan requires an active camera preview and ready OCR runtime.");
+    updateActionAvailability();
+    return;
+  }
+
+  continuousScanEnabled = true;
+  clearContinuousScanTimer();
+  lastContinuousAudioSeat = null;
+  setCameraMessage("Continuous scan active. Capturing one frame every second.");
+  updateActionAvailability();
+  void captureAndSendOCR({ initiatedByContinuousScan: true });
+};
+
+const captureAndSendOCR = async (
+  options: { initiatedByContinuousScan?: boolean } = {}
+): Promise<void> => {
+  const initiatedByContinuousScan = options.initiatedByContinuousScan ?? false;
   if (!cameraStream || isOCRInFlight) {
+    if (initiatedByContinuousScan && continuousScanEnabled) {
+      scheduleContinuousScan();
+    }
     return;
   }
 
   if (!isRuntimeReady()) {
     setCameraMessage(latestRuntimeStatus?.message ?? "OCR runtime is not ready yet.");
+    if (initiatedByContinuousScan && continuousScanEnabled) {
+      scheduleContinuousScan();
+    }
     return;
   }
 
   const blob = await captureFrameBlob();
   if (!blob) {
     setCameraMessage("No video frame available yet. Wait for the preview to load and try again.");
+    if (initiatedByContinuousScan && continuousScanEnabled) {
+      scheduleContinuousScan();
+    }
     return;
   }
 
@@ -836,7 +929,19 @@ const captureAndSendOCR = async (): Promise<void> => {
     const items = Array.isArray(response.results) ? response.results : [];
     const { result: parsed, debug: parserDebug } = parseResultFromOCRItems(items);
     const lookupName = parserDebug.selectedName?.text.trim() ?? null;
-    const seatAudioResult = await resolveAndPlaySeatAudio(lookupName);
+    const seatAudioResult = await resolveAndPlaySeatAudio(lookupName, {
+      suppressSeatPlayback: initiatedByContinuousScan ? lastContinuousAudioSeat : null,
+    });
+
+    if (initiatedByContinuousScan) {
+      if (seatAudioResult.status === "playing" && seatAudioResult.resolvedSeat) {
+        lastContinuousAudioSeat = seatAudioResult.resolvedSeat;
+      } else if (!(seatAudioResult.status === "skipped" && seatAudioResult.resolvedSeat === lastContinuousAudioSeat)) {
+        lastContinuousAudioSeat = null;
+      }
+    } else {
+      lastContinuousAudioSeat = null;
+    }
 
     if (parsed) {
       const passName = parsed.confidence.name >= appConfig.confidenceThresholdName;
@@ -854,7 +959,9 @@ const captureAndSendOCR = async (): Promise<void> => {
     updateSeatAudioDisplay(seatAudioResult);
     updateDiagnosticsDisplay(response, parserDebug);
     setSampleStatus(`completed (${items.length} OCR lines)`);
-    setCameraMessage("Capture sent to OCR.");
+    setCameraMessage(
+      initiatedByContinuousScan ? "Continuous scan active. Latest frame sent to OCR." : "Capture sent to OCR."
+    );
   } catch (error) {
     scanController.setState("RetryNeeded");
     updateDiagnosticsDisplay(null, null);
@@ -874,11 +981,15 @@ const captureAndSendOCR = async (): Promise<void> => {
   } finally {
     isOCRInFlight = false;
     updateActionAvailability();
+    if (initiatedByContinuousScan && continuousScanEnabled && cameraStream) {
+      scheduleContinuousScan();
+    }
   }
 };
 
 const stopPreview = (): void => {
   isOCRInFlight = false;
+  disableContinuousScan();
   setSampleStatus("idle");
 
   if (cameraStream) {
@@ -948,7 +1059,7 @@ const startPreview = async (): Promise<void> => {
 
     scanController.setState("Scanning");
     setSampleStatus("idle");
-    setCameraMessage("Camera preview active. Press Capture to send one image to OCR.");
+    setCameraMessage("Camera preview active. Use one-click capture or start continuous scan.");
     updateActionAvailability();
   } catch (error) {
     setSampleStatus("idle");
@@ -992,6 +1103,7 @@ updateSeatAudioDisplay({
   status: "idle",
   message: "idle",
 });
+updateScanModeStatus();
 void updateCameraControlsState();
 void refreshRuntimeStatus();
 
@@ -1001,6 +1113,10 @@ startCameraButton.addEventListener("click", () => {
 
 captureOCRButton.addEventListener("click", () => {
   void captureAndSendOCR();
+});
+
+toggleContinuousScanButton.addEventListener("click", () => {
+  setContinuousScanEnabled(!continuousScanEnabled);
 });
 
 stopCameraButton.addEventListener("click", stopPreview);
@@ -1038,5 +1154,6 @@ window.addEventListener("beforeunload", () => {
   if (runtimePollTimer !== null) {
     window.clearTimeout(runtimePollTimer);
   }
+  clearContinuousScanTimer();
   stopPreview();
 });

@@ -1,7 +1,6 @@
 node_modules/
 ticket_example/
 dist/
-*.jpg
 __pycache__/
 venv/
 .venv/
@@ -9,3 +8,7 @@ ocr_debug/
 names.csv
 *.wav
 specs/
+.agent/
+.agents/
+.specify/
+.codex

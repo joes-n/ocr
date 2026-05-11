@@ -11,6 +11,7 @@ When the parsed name exactly matches `Chinese Name` in `names.csv`, the frontend
 - Dev mode: Vite serves the UI and proxies `/ocr`, `/runtime`, `/healthz`, and `/shutdown` to `http://127.0.0.1:8000`
 - Production-style mode: the backend serves the built frontend from `dist/` and serves `names.csv`/`audio/` from the repo root
 - Browser target: desktop Chrome with camera access
+- Scan modes: one-click capture and continuous 1-second capture
 - Windows packaging path: launcher + PyInstaller + Inno Setup assets in `packaging/windows/`
 
 There is no sample ticket image checked into this repo anymore. Any backend verification command must use your own local image file.
@@ -36,7 +37,7 @@ There is no sample ticket image checked into this repo anymore. Any backend veri
 ## How It Works
 
 1. The browser UI starts a camera preview in desktop Chrome.
-2. The user captures one frame and uploads it to `POST /ocr`.
+2. The user captures one frame on demand or enables continuous 1-second capture, and each frame is uploaded to `POST /ocr`.
 3. The backend crops the lower-left region first and runs the mobile PaddleOCR pass.
 4. If the ROI pass returns nothing, the backend falls back to a full-frame server OCR pass.
 5. The frontend parses OCR lines and tries to extract:
