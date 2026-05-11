@@ -101,6 +101,11 @@ logger = _configure_logging()
 
 from paddleocr import PaddleOCR
 
+try:
+    from .ocr_scoring import score_ocr_items
+except ImportError:
+    from ocr_scoring import score_ocr_items
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -122,6 +127,17 @@ app.add_middleware(
 MAX_IMAGE_SIDE = 1920
 BOTTOM_ROI_FRACTION = 0.5
 LEFT_ROI_FRACTION = 0.6
+BOTTOM_WIDE_ROI_FRACTION = 0.6
+FULL_WIDTH_ROI_FRACTION = 1.0
+LABEL_HSV_LOWER_A = np.array([0, 20, 150])
+LABEL_HSV_UPPER_A = np.array([15, 50, 220])
+LABEL_HSV_LOWER_B = np.array([170, 20, 150])
+LABEL_HSV_UPPER_B = np.array([180, 50, 220])
+LABEL_MORPH_KERNEL_SIZE = 21
+LABEL_MIN_AREA_FRACTION = 0.01
+LABEL_MIN_SOLIDITY = 0.7
+LABEL_ASPECT_RANGE = (0.5, 5.0)
+LABEL_CROP_PAD = 0.02
 DEBUG_ARTIFACT_DIR = os.environ.get("OCR_DEBUG_DIR", "").strip()
 DEBUG_SAVE_IMAGES = os.environ.get("OCR_DEBUG_SAVE_IMAGES", "true").strip().lower() not in {
     "",
@@ -460,13 +476,128 @@ def run_ocr(ocr_engine: PaddleOCR, img: np.ndarray, box_offset=(0, 0)) -> list:
     return _normalize_ocr_output(raw_pages, inv_scale=inv_scale, box_offset=box_offset)
 
 
-def crop_bottom_roi(img: np.ndarray):
+def crop_bottom_roi(
+    img: np.ndarray,
+    *,
+    bottom_fraction: float = BOTTOM_ROI_FRACTION,
+    left_fraction: float = LEFT_ROI_FRACTION,
+):
     height, width = img.shape[:2]
-    y_start = max(0, min(height - 1, int(height * (1.0 - BOTTOM_ROI_FRACTION))))
-    x_end = max(1, min(width, int(width * LEFT_ROI_FRACTION)))
+    y_start = max(0, min(height - 1, int(height * (1.0 - bottom_fraction))))
+    x_end = max(1, min(width, int(width * left_fraction)))
     roi = img[y_start:height, 0:x_end]
     bbox = (0, y_start, x_end, max(1, height - y_start))
     return roi, bbox
+
+
+def detect_hsv_label_region(img: np.ndarray):
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    mask = cv2.bitwise_or(
+        cv2.inRange(hsv, LABEL_HSV_LOWER_A, LABEL_HSV_UPPER_A),
+        cv2.inRange(hsv, LABEL_HSV_LOWER_B, LABEL_HSV_UPPER_B),
+    )
+
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_RECT,
+        (LABEL_MORPH_KERNEL_SIZE, LABEL_MORPH_KERNEL_SIZE),
+    )
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None, mask
+
+    img_area = img.shape[0] * img.shape[1]
+    min_area = img_area * LABEL_MIN_AREA_FRACTION
+
+    best = None
+    best_area = 0.0
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < min_area:
+            continue
+        x, y, w, h = cv2.boundingRect(contour)
+        rect_area = w * h
+        if rect_area == 0:
+            continue
+        solidity = area / rect_area
+        if solidity < LABEL_MIN_SOLIDITY:
+            continue
+        aspect = w / h
+        if aspect < LABEL_ASPECT_RANGE[0] or aspect > LABEL_ASPECT_RANGE[1]:
+            continue
+        if area > best_area:
+            best = (x, y, w, h)
+            best_area = area
+
+    return best, mask
+
+
+def crop_padded_bbox(img: np.ndarray, bbox, pad_fraction: float = LABEL_CROP_PAD):
+    if bbox is None:
+        return None, None
+
+    x, y, w, h = bbox
+    img_h, img_w = img.shape[:2]
+    pad_x = int(w * pad_fraction)
+    pad_y = int(h * pad_fraction)
+    x1 = max(0, x - pad_x)
+    y1 = max(0, y - pad_y)
+    x2 = min(img_w, x + w + pad_x)
+    y2 = min(img_h, y + h + pad_y)
+    return img[y1:y2, x1:x2], (x1, y1, max(1, x2 - x1), max(1, y2 - y1))
+
+
+def _compact_scored_candidate(scored: dict) -> dict:
+    return {
+        "is_complete": bool(scored.get("is_complete")),
+        "failure_reason": scored.get("failure_reason"),
+        "score": _rounded(float(scored.get("score") or 0.0), 4),
+        "selected_seat": scored.get("selected_seat"),
+        "selected_name": scored.get("selected_name"),
+        "confidence": scored.get("confidence"),
+        "seat_candidate_count": len(scored.get("seat_candidates") or []),
+        "name_candidate_count": len(scored.get("name_candidates") or []),
+    }
+
+
+def _build_validation_attempt(
+    *,
+    stage: str,
+    engine: str,
+    bbox,
+    output: list,
+    ocr_ms: float,
+    scored: dict,
+    error: str | None = None,
+) -> dict:
+    return {
+        "stage": stage,
+        "engine": engine,
+        "bbox": _bbox_dict(bbox),
+        "output_count": len(output),
+        "ocr_ms": _rounded(ocr_ms, 2),
+        "accepted": bool(scored.get("is_complete")),
+        "parse_reason": scored.get("failure_reason"),
+        "score": _rounded(float(scored.get("score") or 0.0), 4),
+        "selected_seat": scored.get("selected_seat"),
+        "selected_name": scored.get("selected_name"),
+        "confidence": scored.get("confidence"),
+        "error": error,
+    }
+
+
+def _select_best_attempt(attempts: list[dict]):
+    if not attempts:
+        return None
+    return max(
+        enumerate(attempts),
+        key=lambda indexed: (
+            float(indexed[1]["scored"].get("score") or 0.0),
+            -indexed[0],
+        ),
+    )[1]
 
 
 def _build_debug_response(
@@ -638,98 +769,182 @@ async def process_image(file: UploadFile = File(...)):
         image_shape = {"width": int(img.shape[1]), "height": int(img.shape[0])}
 
         crop_start = time.perf_counter()
-        roi_img, roi_bbox = crop_bottom_roi(img)
+        roi_specs = [
+            {
+                "stage": "bottom50_left60_mobile",
+                "engine": ocr_mobile,
+                "engine_label": "PP-OCRv5_mobile_det+PP-OCRv5_mobile_rec",
+                "bottom_fraction": BOTTOM_ROI_FRACTION,
+                "left_fraction": LEFT_ROI_FRACTION,
+                "artifact_key": "roi_bottom50_left60",
+                "artifact_filename": "roi_bottom50_left60.jpg",
+            },
+            {
+                "stage": "bottom60_fullwidth_mobile",
+                "engine": ocr_mobile,
+                "engine_label": "PP-OCRv5_mobile_det+PP-OCRv5_mobile_rec",
+                "bottom_fraction": BOTTOM_WIDE_ROI_FRACTION,
+                "left_fraction": FULL_WIDTH_ROI_FRACTION,
+                "artifact_key": "roi_bottom60_fullwidth",
+                "artifact_filename": "roi_bottom60_fullwidth.jpg",
+            },
+        ]
+        roi_candidates = []
+        for spec in roi_specs:
+            roi_img, roi_bbox = crop_bottom_roi(
+                img,
+                bottom_fraction=spec["bottom_fraction"],
+                left_fraction=spec["left_fraction"],
+            )
+            roi_candidates.append({**spec, "image": roi_img, "bbox": roi_bbox})
+            artifacts[spec["artifact_key"]] = _save_image_artifact(
+                debug_dir,
+                _make_artifact_entry(spec["artifact_filename"], enabled=DEBUG_SAVE_IMAGES),
+                roi_img,
+            )
         crop_ms = (time.perf_counter() - crop_start) * 1000.0
 
-        artifacts["roi_bottom50_left60"] = _save_image_artifact(
+        label_detect_start = time.perf_counter()
+        hsv_label_bbox, hsv_label_mask = detect_hsv_label_region(img)
+        label_detect_ms = (time.perf_counter() - label_detect_start) * 1000.0
+        artifacts["hsv_label_mask"] = _save_image_artifact(
             debug_dir,
-            _make_artifact_entry("roi_bottom50_left60.jpg", enabled=DEBUG_SAVE_IMAGES),
-            roi_img,
+            _make_artifact_entry("hsv_label_mask.jpg", enabled=DEBUG_SAVE_IMAGES),
+            hsv_label_mask,
         )
 
+        hsv_label_img, hsv_label_padded_bbox = crop_padded_bbox(img, hsv_label_bbox)
+        if hsv_label_img is not None:
+            artifacts["hsv_label_diagnostic"] = _save_image_artifact(
+                debug_dir,
+                _make_artifact_entry("hsv_label_diagnostic.jpg", enabled=DEBUG_SAVE_IMAGES),
+                hsv_label_img,
+            )
+
         label_debug = {
-            "strategy": "bottom_50_percent_left_60_percent_roi",
-            "roi_fraction": BOTTOM_ROI_FRACTION,
-            "left_fraction": LEFT_ROI_FRACTION,
+            "strategy": "multi_candidate_roi_score",
+            "roi_candidates": [
+                {
+                    "stage": candidate["stage"],
+                    "bottom_fraction": candidate["bottom_fraction"],
+                    "left_fraction": candidate["left_fraction"],
+                    "bbox": _bbox_dict(candidate["bbox"]),
+                }
+                for candidate in roi_candidates
+            ],
+            "hsv_label_candidate": {
+                "raw_bbox": _bbox_dict(hsv_label_bbox),
+                "padded_bbox": _bbox_dict(hsv_label_padded_bbox),
+                "diagnostic_only": True,
+            },
             "selected_pass": None,
             "selected_bbox": None,
             "selected_candidate": None,
             "validation_attempts": [],
-            "roi_bbox": _bbox_dict(roi_bbox),
-            "mobile_error": None,
+            "candidate_errors": [],
         }
 
         mobile_ocr_ms = 0.0
         fallback_ocr_ms = 0.0
-        output = []
-        path = "mobile_bottom50_left60_roi"
+        attempts = []
 
-        try:
-            mobile_start = time.perf_counter()
-            output = run_ocr(ocr_mobile, roi_img, box_offset=(roi_bbox[0], roi_bbox[1]))
-            mobile_ocr_ms = (time.perf_counter() - mobile_start) * 1000.0
-            label_debug["validation_attempts"].append(
-                {
-                    "stage": "mobile_bottom50_left60_roi",
-                    "output_count": len(output),
-                    "ocr_ms": _rounded(mobile_ocr_ms, 2),
-                    "accepted": bool(output),
-                }
-            )
-        except Exception as mobile_exc:
-            path = "fallback_mobile_error"
-            label_debug["mobile_error"] = str(mobile_exc)
+        for candidate in roi_candidates:
+            attempt_start = time.perf_counter()
             output = []
-            logger.error(
-                "request_id=%s attempt=%s mobile OCR failed: %s",
-                request_id,
-                attempt_number,
-                mobile_exc,
-            )
-            logger.error(traceback.format_exc())
+            error = None
+            try:
+                output = run_ocr(
+                    candidate["engine"],
+                    candidate["image"],
+                    box_offset=(candidate["bbox"][0], candidate["bbox"][1]),
+                )
+            except Exception as mobile_exc:
+                error = str(mobile_exc)
+                label_debug["candidate_errors"].append({"stage": candidate["stage"], "error": error})
+                logger.error(
+                    "request_id=%s attempt=%s candidate=%s mobile OCR failed: %s",
+                    request_id,
+                    attempt_number,
+                    candidate["stage"],
+                    mobile_exc,
+                )
+                logger.error(traceback.format_exc())
 
-        if output:
-            label_debug["selected_pass"] = "mobile_bottom50_left60_roi"
-            label_debug["selected_bbox"] = _bbox_dict(roi_bbox)
-            label_debug["selected_candidate"] = {
-                "engine": "PP-OCRv5_mobile_det+PP-OCRv5_mobile_rec",
-                "roi_fraction": BOTTOM_ROI_FRACTION,
-                "left_fraction": LEFT_ROI_FRACTION,
+            ocr_ms = (time.perf_counter() - attempt_start) * 1000.0
+            mobile_ocr_ms += ocr_ms
+            scored = score_ocr_items(output)
+            attempt = {
+                "stage": candidate["stage"],
+                "engine": candidate["engine_label"],
+                "bbox": candidate["bbox"],
+                "output": output,
+                "ocr_ms": ocr_ms,
+                "scored": scored,
+                "error": error,
             }
-            path = "mobile_bottom50_left60_roi"
-        else:
-            if path != "fallback_mobile_error":
-                path = "fallback_mobile_empty"
-
-            fallback_start = time.perf_counter()
-            output = run_ocr(ocr_fallback, img)
-            fallback_ocr_ms = (time.perf_counter() - fallback_start) * 1000.0
-
+            attempts.append(attempt)
             label_debug["validation_attempts"].append(
-                {
-                    "stage": "server_full_frame_fallback",
-                    "output_count": len(output),
-                    "ocr_ms": _rounded(fallback_ocr_ms, 2),
-                    "accepted": bool(output),
-                }
+                _build_validation_attempt(
+                    stage=attempt["stage"],
+                    engine=attempt["engine"],
+                    bbox=attempt["bbox"],
+                    output=attempt["output"],
+                    ocr_ms=attempt["ocr_ms"],
+                    scored=attempt["scored"],
+                    error=attempt["error"],
+                )
             )
-            label_debug["selected_pass"] = "server_full_frame_fallback"
-            label_debug["selected_bbox"] = _bbox_dict((0, 0, img.shape[1], img.shape[0]))
-            label_debug["selected_candidate"] = {
+
+        if not any(attempt["scored"]["is_complete"] for attempt in attempts):
+            fallback_start = time.perf_counter()
+            fallback_output = run_ocr(ocr_fallback, img)
+            fallback_ocr_ms = (time.perf_counter() - fallback_start) * 1000.0
+            fallback_scored = score_ocr_items(fallback_output)
+            fallback_attempt = {
+                "stage": "server_full_frame_fallback",
                 "engine": "PP-OCRv5_server_det+PP-OCRv5_server_rec",
-                "reason": path,
+                "bbox": (0, 0, img.shape[1], img.shape[0]),
+                "output": fallback_output,
+                "ocr_ms": fallback_ocr_ms,
+                "scored": fallback_scored,
+                "error": None,
             }
+            attempts.append(fallback_attempt)
+            label_debug["validation_attempts"].append(
+                _build_validation_attempt(
+                    stage=fallback_attempt["stage"],
+                    engine=fallback_attempt["engine"],
+                    bbox=fallback_attempt["bbox"],
+                    output=fallback_attempt["output"],
+                    ocr_ms=fallback_attempt["ocr_ms"],
+                    scored=fallback_attempt["scored"],
+                )
+            )
+
+        selected_attempt = _select_best_attempt(attempts)
+        selected_scored = selected_attempt["scored"] if selected_attempt is not None else score_ocr_items([])
+        output = selected_attempt["output"] if selected_attempt is not None else []
+        path = selected_attempt["stage"] if selected_attempt is not None else "no_ocr_attempts"
+        label_debug["selected_pass"] = path
+        label_debug["selected_bbox"] = _bbox_dict(selected_attempt["bbox"] if selected_attempt is not None else None)
+        label_debug["selected_candidate"] = {
+            "stage": path,
+            "engine": selected_attempt["engine"] if selected_attempt is not None else None,
+            "bbox": _bbox_dict(selected_attempt["bbox"] if selected_attempt is not None else None),
+            "scoring": _compact_scored_candidate(selected_scored),
+        }
 
         total_ms = (time.perf_counter() - total_start) * 1000.0
         profiling = {
             "path": path,
             "decode_ms": round(decode_ms, 2),
-            "label_detect_ms": 0.0,
+            "label_detect_ms": round(label_detect_ms, 2),
             "crop_ms": round(crop_ms, 2),
             "seg_ms": 0.0,
             "ocr_ms": round(mobile_ocr_ms + fallback_ocr_ms, 2),
             "mobile_ocr_ms": round(mobile_ocr_ms, 2),
             "fallback_ocr_ms": round(fallback_ocr_ms, 2),
+            "selected_score": _rounded(float(selected_scored.get("score") or 0.0), 4),
             "total_ms": round(total_ms, 2),
         }
         payload = _build_debug_response(

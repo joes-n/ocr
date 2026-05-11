@@ -95,6 +95,25 @@ cd /home/raner/proj_ocr/backend
 python test_script.py /absolute/path/to/your-image.jpg
 ```
 
+For a labeled accuracy pass, keep ticket captures outside the repo and create a JSON or CSV manifest with image path, expected name, and expected seat:
+
+```json
+[
+  {
+    "image": "/absolute/path/to/ticket.jpg",
+    "expected_name": "Jane Chan",
+    "expected_seat": "10AC13"
+  }
+]
+```
+
+Then run:
+
+```bash
+cd /home/raner/proj_ocr
+python backend/evaluate_ocr.py /absolute/path/to/manifest.json --fail-on-miss
+```
+
 ### 3) Start the frontend in dev mode
 
 ```bash
@@ -203,7 +222,7 @@ docker run --rm -p 8000:8000 -e PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True paddl
 
 - Camera capture is still intended for desktop Chrome.
 - The backend currently allows CORS from any origin.
-- OCR responses return `results`, `profiling`, `debug`, and `service_state`.
+- OCR responses return `results`, `profiling`, `debug`, and `service_state`; `debug.label_detection.validation_attempts` lists the ROI/fallback candidates that were scored.
 - First launch may take longer while OCR models are downloaded or loaded.
 - Write debug artifacts to `ocr_debug/` with `OCR_DEBUG_DIR=./ocr_debug OCR_DEBUG_SAVE_IMAGES=true python main.py`.
 - OS-specific setup details live in `SETUP.md`.
