@@ -4,6 +4,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if (Test-Path variable:PSNativeCommandUseErrorActionPreference) {
+    $PSNativeCommandUseErrorActionPreference = $true
+}
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $SpecRoot = Join-Path $RepoRoot "packaging\windows"
@@ -42,7 +45,7 @@ try {
     New-Item -ItemType Directory -Path $PyInstallerDist | Out-Null
     New-Item -ItemType Directory -Path $PyInstallerWork | Out-Null
     New-Item -ItemType Directory -Path $BundleRoot | Out-Null
-    New-Item -ItemType Directory -Path $InstallerRoot | Out-Null
+    New-Item -ItemType Directory -Path $InstallerRoot -Force | Out-Null
 
     & $PythonExe -m PyInstaller --noconfirm --clean `
         --distpath $PyInstallerDist `
