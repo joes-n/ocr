@@ -24,6 +24,35 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def _app_data_dir() -> Path:
+    configured = os.environ.get("OCR_APP_DATA_DIR")
+    if configured:
+        return Path(configured).expanduser()
+
+    if os.name == "nt":
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        if local_appdata:
+            return Path(local_appdata) / "OCRTicketReader"
+
+    return _repo_root() / ".runtime"
+
+
+def _backend_log_file() -> Path:
+    return _app_data_dir() / "logs" / "backend.log"
+
+
+def _env_flag_enabled(name: str, *, default: bool) -> bool:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+
+    return raw_value.strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def _powershell_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
 def _show_message(message: str, *, error: bool = False) -> None:
     if os.name == "nt":
         flags = 0x10 if error else 0x40
@@ -121,6 +150,38 @@ def _start_backend() -> subprocess.Popen[bytes]:
     return subprocess.Popen(command, **popen_kwargs)
 
 
+def _start_backend_log_window() -> subprocess.Popen[bytes] | None:
+    if os.name != "nt" or not _env_flag_enabled("OCR_SHOW_BACKEND_LOG", default=True):
+        return None
+
+    log_file = _backend_log_file()
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    log_file_literal = _powershell_literal(str(log_file))
+    tail_command = (
+        "$Host.UI.RawUI.WindowTitle = 'OCR Ticket Reader Backend Log'; "
+        f"$logPath = {log_file_literal}; "
+        "Write-Host 'Backend log:' $logPath; "
+        "Write-Host 'Waiting for backend log output...'; "
+        "while (!(Test-Path -LiteralPath $logPath)) { Start-Sleep -Milliseconds 300 }; "
+        "Get-Content -LiteralPath $logPath -Tail 200 -Wait"
+    )
+
+    return subprocess.Popen(
+        [
+            "cmd.exe",
+            "/k",
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            tail_command,
+        ],
+        stdin=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NEW_CONSOLE,
+    )
+
+
 def main() -> int:
     if _healthcheck():
         _open_browser()
@@ -152,6 +213,7 @@ def main() -> int:
 
         try:
             _start_backend()
+            _start_backend_log_window()
         except Exception as error:
             _show_message(f"Unable to start the local OCR service: {error}", error=True)
             return 1
