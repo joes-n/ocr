@@ -22,6 +22,19 @@ class OCRScoringTests(unittest.TestCase):
         self.assertEqual(scored["selected_name"]["text"], "陳大文")
         self.assertEqual(scored["selected_seat"]["text"], "10AC13")
 
+    def test_valid_english_name_and_seat_are_complete(self) -> None:
+        scored = score_ocr_items(
+            [
+                {"text": "Jane Chan", "confidence": 0.91},
+                {"text": "10AC13", "confidence": 0.95},
+            ]
+        )
+
+        self.assertTrue(scored["is_complete"])
+        self.assertIsNone(scored["failure_reason"])
+        self.assertEqual(scored["selected_name"]["text"], "Jane Chan")
+        self.assertEqual(scored["selected_seat"]["text"], "10AC13")
+
     def test_seat_only_is_not_complete(self) -> None:
         scored = score_ocr_items([{"text": "10AC13", "confidence": 0.99}])
 

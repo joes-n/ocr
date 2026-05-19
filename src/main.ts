@@ -267,6 +267,10 @@ const disableContinuousScan = (): void => {
   updateScanModeStatus();
 };
 
+const supportedNameSeatHeaders = new Set(["Seat No,Name", "Seat No,Chinese Name"]);
+
+const normalizeNameLookupKey = (name: string): string => name.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
+
 const parseNameSeatDirectory = (csvText: string): Map<string, string> => {
   const rows = csvText
     .split(/\r?\n/)
@@ -278,8 +282,8 @@ const parseNameSeatDirectory = (csvText: string): Map<string, string> => {
   }
 
   const header = rows[0].replace(/^\ufeff/, "");
-  if (header !== "Seat No,Chinese Name") {
-    throw new Error(`Unexpected names.csv header: ${header}`);
+  if (!supportedNameSeatHeaders.has(header)) {
+    throw new Error(`Unexpected names.csv header: ${header}. Expected Seat No,Name`);
   }
 
   const directory = new Map<string, string>();
@@ -291,9 +295,9 @@ const parseNameSeatDirectory = (csvText: string): Map<string, string> => {
     }
 
     const seat = row.slice(0, separatorIndex).trim();
-    const name = row.slice(separatorIndex + 1).trim();
-    if (seat && name) {
-      directory.set(name, seat);
+    const nameKey = normalizeNameLookupKey(row.slice(separatorIndex + 1));
+    if (seat && nameKey) {
+      directory.set(nameKey, seat);
     }
   }
 
@@ -353,7 +357,7 @@ const resolveAndPlaySeatAudio = async (
     };
   }
 
-  const resolvedSeat = directory.get(lookupName) ?? null;
+  const resolvedSeat = directory.get(normalizeNameLookupKey(lookupName)) ?? null;
   if (!resolvedSeat) {
     stopSeatAudioPlayback();
     return {

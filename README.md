@@ -2,7 +2,7 @@
 
 Local OCR app for scanning a ticket from a webcam, sending one captured frame to a local PaddleOCR backend, and extracting a holder name plus seat code.
 
-When the parsed name exactly matches `Chinese Name` in `names.csv`, the frontend resolves the seat from the CSV and attempts to play `audio/<Seat No>.wav`.
+When the parsed name matches `Name` in `names.csv`, the frontend resolves the seat from the CSV and attempts to play `audio/<Seat No>.wav`.
 
 ## Current Status
 
@@ -43,7 +43,7 @@ There is no sample ticket image checked into this repo anymore. Any backend veri
 5. The frontend parses OCR lines and tries to extract:
    - `holderName`
    - `seatNumber` matching `([0-9]{2}[A-Z]{2}[0-9]{2})`
-6. The frontend exact-matches the parsed name against `names.csv` and tries to play `audio/<Seat No>.wav`.
+6. The frontend normalized-exact-matches the parsed name against `names.csv` and tries to play `audio/<Seat No>.wav`.
 7. The UI shows parsed fields, raw OCR lines, diagnostics, seat-audio status, and scan state.
 
 ## Runtime Endpoints
@@ -193,7 +193,7 @@ In packaged mode on Windows, app data defaults to `%LOCALAPPDATA%\OCRTicketReade
 
 ## Seat Audio Assets
 
-- Keep `names.csv` at repo root with header `Seat No,Chinese Name`.
+- Keep `names.csv` at repo root with header `Seat No,Name`; legacy `Seat No,Chinese Name` files are still accepted.
 - Put seat WAV files in repo-root `audio/`, named exactly like the CSV seat number, for example `audio/6E53.wav`.
 - In the packaged Windows app, editable runtime copies live under `%LOCALAPPDATA%\OCRTicketReader\assets`.
 - On first packaged launch, bundled starter assets are copied there only when the destination file is missing.
