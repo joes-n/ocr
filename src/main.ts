@@ -19,14 +19,17 @@ if (!app) {
 const isChrome = /Chrome/.test(navigator.userAgent) && !/Edg|OPR/.test(navigator.userAgent);
 const hasCameraApi = Boolean(navigator.mediaDevices?.getUserMedia);
 const scanController = new ScanController("Ready");
+const isDebugRoute = window.location.pathname.replace(/\/$/, "") === "/debug";
 
 let latestOCRResult: OCRResult | null = null;
 let latestOCRItems: OCRItem[] = [];
 let latestRuntimeStatus: RuntimeStatus | null = null;
+let latestConfirmedAudioResult: SeatAudioResult | null = null;
 let preferredFacingMode: "user" | "environment" = "environment";
 let selectedCameraId: string | null = null;
 let cameraStream: MediaStream | null = null;
 let isOCRInFlight = false;
+let operatorAutoStartAttempted = false;
 let activeSeatAudio: HTMLAudioElement | null = null;
 let nameSeatDirectoryPromise: Promise<Map<string, string>> | null = null;
 let runtimePollTimer: number | null = null;
@@ -41,7 +44,7 @@ const plannedAudioOutput: AudioResolution = {
   segments: [],
 };
 
-app.innerHTML = `
+const renderDebugApp = (): string => `
   <main class="shell">
     <header>
       <h1>OCR Ticket Reader</h1>
@@ -114,6 +117,60 @@ app.innerHTML = `
   </main>
 `;
 
+const renderOperatorApp = (): string => `
+  <main class="operator-shell">
+    <section class="operator-camera">
+      <div class="operator-preview-frame preview-frame">
+        <video id="camera-preview" autoplay muted playsinline></video>
+      </div>
+      <p id="camera-message" class="operator-status">Connecting to the local OCR service...</p>
+    </section>
+
+    <section class="operator-result" aria-live="polite">
+      <p id="operator-name" class="operator-name" hidden></p>
+    </section>
+
+    <div class="operator-actions">
+      <button id="capture-ocr-btn" class="operator-button operator-button-primary" type="button" disabled>Read Again</button>
+      <button id="male-audio-btn" class="operator-button" type="button" disabled>Male Audio</button>
+      <button id="female-audio-btn" class="operator-button" type="button" disabled>Female Audio</button>
+      <button id="quit-app-btn" class="operator-button" type="button" hidden disabled>Quit App</button>
+    </div>
+
+    <div class="app-hidden" aria-hidden="true">
+      <span id="app-mode">Checking runtime...</span>
+      <span id="backend-runtime">Checking runtime...</span>
+      <p id="runtime-message">Connecting to the local OCR service...</p>
+      <p id="app-state"><strong>App state:</strong> ${scanController.getState()}</p>
+      <p id="ocr-summary"><strong>Latest OCR result:</strong> None</p>
+      <p id="sample-status"><strong>OCR request:</strong> idle</p>
+      <p id="scan-mode-status"><strong>Scan mode:</strong> One click</p>
+      <select id="camera-select" disabled>
+        <option value="">Default rear camera</option>
+      </select>
+      <button id="switch-facing-btn" type="button" disabled>Switch to Front Camera</button>
+      <p id="result-name"><strong>Name:</strong> -</p>
+      <p id="result-seat"><strong>Seat:</strong> -</p>
+      <p id="result-confidence"><strong>Confidence:</strong> -</p>
+      <p id="audio-seat"><strong>CSV seat:</strong> -</p>
+      <p id="audio-status"><strong>Seat audio:</strong> idle</p>
+      <p id="ocr-count"><strong>Lines:</strong> 0</p>
+      <pre id="ocr-raw">[]</pre>
+      <p id="backend-path"><strong>Backend path:</strong> -</p>
+      <p id="backend-request"><strong>Request ID:</strong> -</p>
+      <p id="backend-attempt"><strong>Attempt:</strong> -</p>
+      <p id="backend-pass"><strong>Selected pass:</strong> -</p>
+      <p id="parser-status"><strong>Parser status:</strong> -</p>
+      <pre id="ocr-diagnostics">{}</pre>
+      <button id="start-camera-btn" type="button" disabled>Enable Camera</button>
+      <button id="toggle-continuous-scan-btn" type="button" disabled>Start Continuous Scan</button>
+      <button id="stop-camera-btn" type="button" disabled>Stop Camera</button>
+    </div>
+  </main>
+`;
+
+app.innerHTML = isDebugRoute ? renderDebugApp() : renderOperatorApp();
+
 const appStateElement = document.querySelector<HTMLParagraphElement>("#app-state");
 const appModeElement = document.querySelector<HTMLSpanElement>("#app-mode");
 const runtimeStateElement = document.querySelector<HTMLSpanElement>("#backend-runtime");
@@ -143,6 +200,9 @@ const captureOCRButton = document.querySelector<HTMLButtonElement>("#capture-ocr
 const toggleContinuousScanButton = document.querySelector<HTMLButtonElement>("#toggle-continuous-scan-btn");
 const stopCameraButton = document.querySelector<HTMLButtonElement>("#stop-camera-btn");
 const quitAppButton = document.querySelector<HTMLButtonElement>("#quit-app-btn");
+const operatorNameElement = document.querySelector<HTMLParagraphElement>("#operator-name");
+const maleAudioButton = document.querySelector<HTMLButtonElement>("#male-audio-btn");
+const femaleAudioButton = document.querySelector<HTMLButtonElement>("#female-audio-btn");
 
 if (
   !appStateElement ||
@@ -204,6 +264,24 @@ const setCameraMessage = (message: string): void => {
 
 const setSampleStatus = (message: string): void => {
   sampleStatusElement.innerHTML = `<strong>OCR request:</strong> ${message}`;
+};
+
+const setConfirmedOperatorResult = (displayName: string | null, audioResult: SeatAudioResult | null): void => {
+  if (displayName && audioResult?.sourceUrl && audioResult.resolvedSeat) {
+    latestConfirmedAudioResult = audioResult;
+    if (operatorNameElement) {
+      operatorNameElement.textContent = displayName;
+      operatorNameElement.hidden = false;
+    }
+  } else {
+    latestConfirmedAudioResult = null;
+    if (operatorNameElement) {
+      operatorNameElement.textContent = "";
+      operatorNameElement.hidden = true;
+    }
+  }
+
+  updateActionAvailability();
 };
 
 const updateScanModeStatus = (): void => {
@@ -327,10 +405,7 @@ const ensureNameSeatDirectory = async (): Promise<Map<string, string>> => {
 
 const buildSeatAudioUrl = (seatNumber: string): string => `/audio/${encodeURIComponent(seatNumber)}.wav`;
 
-const resolveAndPlaySeatAudio = async (
-  lookupName: string | null,
-  options: { suppressSeatPlayback?: string | null } = {}
-): Promise<SeatAudioResult> => {
+const resolveSeatAudio = async (lookupName: string | null): Promise<SeatAudioResult> => {
   if (!lookupName) {
     stopSeatAudioPlayback();
     return {
@@ -369,18 +444,29 @@ const resolveAndPlaySeatAudio = async (
     };
   }
 
-  if (options.suppressSeatPlayback && resolvedSeat === options.suppressSeatPlayback) {
+  const sourceUrl = buildSeatAudioUrl(resolvedSeat);
+  return {
+    lookupName,
+    resolvedSeat,
+    sourceUrl,
+    status: "ready",
+    message: `ready (${resolvedSeat}.wav)`,
+  };
+};
+
+const playSeatAudioSource = async (audioResult: SeatAudioResult | null, label: string): Promise<SeatAudioResult> => {
+  if (!audioResult?.sourceUrl || !audioResult.resolvedSeat) {
+    stopSeatAudioPlayback();
     return {
-      lookupName,
-      resolvedSeat,
-      sourceUrl: buildSeatAudioUrl(resolvedSeat),
+      lookupName: audioResult?.lookupName ?? null,
+      resolvedSeat: audioResult?.resolvedSeat ?? null,
+      sourceUrl: audioResult?.sourceUrl ?? null,
       status: "skipped",
-      message: `skipped (already played ${resolvedSeat}.wav in continuous mode)`,
+      message: `skipped (${label} audio unavailable)`,
     };
   }
 
-  const sourceUrl = buildSeatAudioUrl(resolvedSeat);
-  const audio = new Audio(sourceUrl);
+  const audio = new Audio(audioResult.sourceUrl);
   audio.playbackRate = appConfig.audioPlaybackRate;
   audio.preload = "auto";
 
@@ -400,11 +486,11 @@ const resolveAndPlaySeatAudio = async (
     );
 
     return {
-      lookupName,
-      resolvedSeat,
-      sourceUrl,
+      lookupName: audioResult.lookupName,
+      resolvedSeat: audioResult.resolvedSeat,
+      sourceUrl: audioResult.sourceUrl,
       status: "playing",
-      message: `playing ${resolvedSeat}.wav`,
+      message: `playing ${audioResult.resolvedSeat}.wav (${label})`,
     };
   } catch (error) {
     if (activeSeatAudio === audio) {
@@ -413,17 +499,25 @@ const resolveAndPlaySeatAudio = async (
 
     const packagedSetupMessage = getPackagedNamesCsvSetupMessage();
     const message = packagedSetupMessage
-      ? `unable to play ${resolvedSeat}.wav; add it under ${latestRuntimeStatus?.audio_assets_dir}`
+      ? `unable to play ${audioResult.resolvedSeat}.wav; add it under ${latestRuntimeStatus?.audio_assets_dir}`
       : error instanceof Error
         ? error.message
         : "Audio playback failed";
     return {
-      lookupName,
-      resolvedSeat,
-      sourceUrl,
+      lookupName: audioResult.lookupName,
+      resolvedSeat: audioResult.resolvedSeat,
+      sourceUrl: audioResult.sourceUrl,
       status: "error",
       message: `error (${withPackagedAssetHint(message)})`,
     };
+  }
+};
+
+const playConfirmedSeatAudio = async (label: string): Promise<void> => {
+  const playbackResult = await playSeatAudioSource(latestConfirmedAudioResult, label);
+  updateSeatAudioDisplay(playbackResult);
+  if (!isDebugRoute && playbackResult.status !== "skipped") {
+    setCameraMessage(playbackResult.message);
   }
 };
 
@@ -521,14 +615,23 @@ const isRuntimeReady = (): boolean => Boolean(latestRuntimeStatus?.is_ready);
 
 const updateActionAvailability = (): void => {
   const canStartCamera = hasCameraApi && isChrome && isRuntimeReady() && !cameraStream;
+  const canPlayResolvedAudio = Boolean(latestConfirmedAudioResult?.sourceUrl) && !isOCRInFlight;
   startCameraButton.disabled = !canStartCamera;
-  captureOCRButton.disabled = !cameraStream || isOCRInFlight || !isRuntimeReady() || continuousScanEnabled;
+  captureOCRButton.disabled = isDebugRoute
+    ? !cameraStream || isOCRInFlight || !isRuntimeReady() || continuousScanEnabled
+    : isOCRInFlight || !isRuntimeReady() || !hasCameraApi || !isChrome || continuousScanEnabled;
   toggleContinuousScanButton.disabled = continuousScanEnabled
     ? !cameraStream
     : !cameraStream || isOCRInFlight || !isRuntimeReady();
   stopCameraButton.disabled = !cameraStream;
   cameraSelectElement.disabled = !cameraStream;
   switchFacingButton.disabled = !cameraStream;
+  if (maleAudioButton) {
+    maleAudioButton.disabled = !canPlayResolvedAudio;
+  }
+  if (femaleAudioButton) {
+    femaleAudioButton.disabled = !canPlayResolvedAudio;
+  }
   quitAppButton.hidden = !(latestRuntimeStatus?.packaged ?? false);
   quitAppButton.disabled = !(latestRuntimeStatus?.packaged ?? false);
   setSwitchFacingLabel();
@@ -569,6 +672,11 @@ const syncRuntimeStatus = (status: RuntimeStatus): void => {
   updateRuntimeDisplay(status);
 
   if (status.is_ready) {
+    if (!isDebugRoute && !operatorAutoStartAttempted && !cameraStream) {
+      operatorAutoStartAttempted = true;
+      void startPreview();
+    }
+
     if (status.packaged && !status.names_csv_present) {
       nameSeatDirectoryPromise = null;
       updateSeatAudioDisplay({
@@ -899,6 +1007,10 @@ const captureAndSendOCR = async (
   options: { initiatedByContinuousScan?: boolean } = {}
 ): Promise<void> => {
   const initiatedByContinuousScan = options.initiatedByContinuousScan ?? false;
+  if (!cameraStream && !isDebugRoute && !isOCRInFlight) {
+    await startPreview();
+  }
+
   if (!cameraStream || isOCRInFlight) {
     if (initiatedByContinuousScan && continuousScanEnabled) {
       scheduleContinuousScan();
@@ -927,30 +1039,34 @@ const captureAndSendOCR = async (
   isOCRInFlight = true;
   updateActionAvailability();
   setSampleStatus("sending");
+  setConfirmedOperatorResult(null, null);
+  stopSeatAudioPlayback();
 
   try {
     const response = await fetchOCRData(blob);
     const items = Array.isArray(response.results) ? response.results : [];
     const { result: parsed, debug: parserDebug } = parseResultFromOCRItems(items);
-    const lookupName = parserDebug.selectedName?.text.trim() ?? null;
-    const seatAudioResult = await resolveAndPlaySeatAudio(lookupName, {
-      suppressSeatPlayback: initiatedByContinuousScan ? lastContinuousAudioSeat : null,
-    });
+    const passName = parsed ? parsed.confidence.name >= appConfig.confidenceThresholdName : false;
+    const passSeat = parsed ? parsed.confidence.seat >= appConfig.confidenceThresholdSeat : false;
+    const passesConfidence = Boolean(parsed && passName && passSeat);
+    const lookupName = passesConfidence && parsed ? parsed.holderName.trim() : null;
+    const seatAudioResult = await resolveSeatAudio(lookupName);
+    const hasConfirmedCsvName = Boolean(passesConfidence && parsed && seatAudioResult.resolvedSeat);
 
-    if (initiatedByContinuousScan) {
-      if (seatAudioResult.status === "playing" && seatAudioResult.resolvedSeat) {
+    if (hasConfirmedCsvName && parsed) {
+      setConfirmedOperatorResult(parsed.holderName, seatAudioResult);
+      if (initiatedByContinuousScan && seatAudioResult.resolvedSeat) {
         lastContinuousAudioSeat = seatAudioResult.resolvedSeat;
-      } else if (!(seatAudioResult.status === "skipped" && seatAudioResult.resolvedSeat === lastContinuousAudioSeat)) {
+      } else if (!initiatedByContinuousScan) {
         lastContinuousAudioSeat = null;
       }
     } else {
+      setConfirmedOperatorResult(null, null);
       lastContinuousAudioSeat = null;
     }
 
     if (parsed) {
-      const passName = parsed.confidence.name >= appConfig.confidenceThresholdName;
-      const passSeat = parsed.confidence.seat >= appConfig.confidenceThresholdSeat;
-      if (passName && passSeat) {
+      if (passesConfidence && seatAudioResult.resolvedSeat) {
         scanController.setState("Recognized");
       } else {
         scanController.setState("RetryNeeded");
@@ -963,9 +1079,13 @@ const captureAndSendOCR = async (
     updateSeatAudioDisplay(seatAudioResult);
     updateDiagnosticsDisplay(response, parserDebug);
     setSampleStatus(`completed (${items.length} OCR lines)`);
-    setCameraMessage(
-      initiatedByContinuousScan ? "Continuous scan active. Latest frame sent to OCR." : "Capture sent to OCR."
-    );
+    if (isDebugRoute) {
+      setCameraMessage(
+        initiatedByContinuousScan ? "Continuous scan active. Latest frame sent to OCR." : "Capture sent to OCR."
+      );
+    } else {
+      setCameraMessage(hasConfirmedCsvName ? "Read successful." : "No matched name.");
+    }
   } catch (error) {
     scanController.setState("RetryNeeded");
     updateDiagnosticsDisplay(null, null);
@@ -1006,6 +1126,7 @@ const stopPreview = (): void => {
   previewElement.srcObject = null;
   scanController.setState("Ready");
   stopSeatAudioPlayback();
+  setConfirmedOperatorResult(null, null);
   updateSeatAudioDisplay({
     lookupName: null,
     resolvedSeat: null,
@@ -1063,7 +1184,7 @@ const startPreview = async (): Promise<void> => {
 
     scanController.setState("Scanning");
     setSampleStatus("idle");
-    setCameraMessage("Camera preview active. Use one-click capture or start continuous scan.");
+    setCameraMessage(isDebugRoute ? "Camera preview active. Use one-click capture or start continuous scan." : "Camera ready.");
     updateActionAvailability();
   } catch (error) {
     setSampleStatus("idle");
@@ -1117,6 +1238,14 @@ startCameraButton.addEventListener("click", () => {
 
 captureOCRButton.addEventListener("click", () => {
   void captureAndSendOCR();
+});
+
+maleAudioButton?.addEventListener("click", () => {
+  void playConfirmedSeatAudio("male");
+});
+
+femaleAudioButton?.addEventListener("click", () => {
+  void playConfirmedSeatAudio("female");
 });
 
 toggleContinuousScanButton.addEventListener("click", () => {

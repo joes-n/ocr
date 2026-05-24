@@ -14,7 +14,7 @@ When the parsed name matches `Name` in `names.csv`, the frontend resolves the se
 - Scan modes: one-click capture and continuous 1-second capture
 - Windows packaging path: launcher + PyInstaller + Inno Setup assets in `packaging/windows/`
 
-There is no sample ticket image checked into this repo anymore. Any backend verification command must use your own local image file.
+Example JPEGs are checked in for OCR smoke tests and timing runs: `text_line_*.jpg` and `ticket_example.jpg`. Use real local captures for production verification.
 
 ## Repository Layout
 
@@ -114,6 +114,13 @@ cd /home/raner/proj_ocr
 python backend/evaluate_ocr.py /absolute/path/to/manifest.json --fail-on-miss
 ```
 
+For a repeatable timing pass on the checked-in example images:
+
+```bash
+cd /home/raner/proj_ocr
+python backend/benchmark_examples.py --device cpu --loops 3
+```
+
 ### 3) Start the frontend in dev mode
 
 ```bash
@@ -185,11 +192,45 @@ Useful backend env vars:
 - `OCR_APP_HOST`
 - `OCR_APP_PORT`
 - `OCR_APP_DATA_DIR`
+- `OCR_DEVICE`: `auto`, `cpu`, `gpu`, or `gpu:<index>`; default is `auto`
 - `OCR_DEBUG_DIR`
 - `OCR_DEBUG_SAVE_IMAGES`
 - `PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK`
 
 In packaged mode on Windows, app data defaults to `%LOCALAPPDATA%\OCRTicketReader`.
+
+`OCR_DEVICE=auto` uses `gpu:0` only when the installed PaddlePaddle package is CUDA-enabled and at least one CUDA device is visible. Otherwise it falls back to CPU. `OCR_DEVICE=gpu:0` is strict and startup fails if CUDA is unavailable. CPU inference keeps MKL-DNN enabled; GPU inference disables MKL-DNN.
+
+`GET /runtime/status` reports `ocr_device_configured`, `ocr_device_resolved`, `paddle_cuda_compiled`, and `paddle_cuda_device_count`.
+
+## NVIDIA GPU Benchmarking
+
+The default `backend/requirements.txt` installs the CPU PaddlePaddle wheel. On an NVIDIA/CUDA machine, replace it with the GPU wheel before using `OCR_DEVICE=gpu:0`.
+
+```bash
+nvidia-smi
+python -m pip uninstall -y paddlepaddle paddlepaddle-gpu
+python -m pip install paddlepaddle-gpu==3.2.2 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
+python -c "import paddle; print(paddle.__version__, paddle.is_compiled_with_cuda(), paddle.device.cuda.device_count()); paddle.utils.run_check()"
+```
+
+Use the `cu118`, `cu126`, or `cu129` PaddlePaddle package index that matches the target driver/runtime. See the official PaddlePaddle and PaddleOCR install docs for the current wheel matrix:
+
+- https://www.paddlepaddle.org.cn/documentation/docs/install/pip/windows-pip_en.html
+- https://www.paddleocr.ai/latest/en/version3.x/paddlepaddle_installation.html
+
+Then compare the same images and model flow:
+
+```bash
+python backend/benchmark_examples.py --device cpu --loops 3 --json-output cpu-benchmark.json
+python backend/benchmark_examples.py --device gpu:0 --loops 3 --json-output gpu-benchmark.json
+```
+
+For the app itself:
+
+```bash
+OCR_DEVICE=gpu:0 python backend/main.py
+```
 
 ## Seat Audio Assets
 

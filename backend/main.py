@@ -102,8 +102,10 @@ logger = _configure_logging()
 from paddleocr import PaddleOCR
 
 try:
+    from .ocr_device import OCRDeviceResolution, detect_paddle_cuda_status, resolve_ocr_device
     from .ocr_scoring import score_ocr_items
 except ImportError:
+    from ocr_device import OCRDeviceResolution, detect_paddle_cuda_status, resolve_ocr_device
     from ocr_scoring import score_ocr_items
 
 
@@ -125,6 +127,12 @@ app.add_middleware(
 )
 
 MAX_IMAGE_SIDE = 1920
+OCR_DEVICE_CONFIGURED = os.environ.get("OCR_DEVICE", "auto").strip() or "auto"
+PADDLE_CUDA_STATUS = detect_paddle_cuda_status()
+MOBILE_DETECTION_MODEL = "PP-OCRv5_mobile_det"
+MOBILE_RECOGNITION_MODEL = "PP-OCRv5_mobile_rec"
+FALLBACK_DETECTION_MODEL = "PP-OCRv5_server_det"
+FALLBACK_RECOGNITION_MODEL = "PP-OCRv5_server_rec"
 BOTTOM_ROI_FRACTION = 0.5
 LEFT_ROI_FRACTION = 0.6
 BOTTOM_WIDE_ROI_FRACTION = 0.6
@@ -152,12 +160,35 @@ class OCRRuntimeUnavailableError(RuntimeError):
     pass
 
 
+def create_paddle_ocr_engine(
+    *,
+    text_detection_model_name: str,
+    text_recognition_model_name: str,
+    device_resolution: OCRDeviceResolution,
+) -> PaddleOCR:
+    return PaddleOCR(
+        text_detection_model_name=text_detection_model_name,
+        text_recognition_model_name=text_recognition_model_name,
+        use_doc_orientation_classify=False,
+        use_doc_unwarping=False,
+        use_textline_orientation=False,
+        device=device_resolution.resolved,
+        enable_mkldnn=device_resolution.enable_mkldnn,
+    )
+
+
 class OCRRuntimeManager:
     def __init__(self, model_cache_dir: Path):
         self._model_cache_dir = model_cache_dir
         self._lock = threading.Lock()
         self._mobile: PaddleOCR | None = None
         self._fallback: PaddleOCR | None = None
+        self._device_resolution: OCRDeviceResolution | None = None
+        self._device_resolution_error: str | None = None
+        try:
+            self._device_resolution = resolve_ocr_device(OCR_DEVICE_CONFIGURED, PADDLE_CUDA_STATUS)
+        except Exception as exc:
+            self._device_resolution_error = str(exc)
         self._thread: threading.Thread | None = None
         self._state = "starting"
         self._message = "Starting OCR runtime."
@@ -194,6 +225,13 @@ class OCRRuntimeManager:
                 "audio_assets_dir": str(audio_assets_dir),
                 "audio_assets_present": audio_assets_dir.is_dir() and any(audio_assets_dir.rglob("*.wav")),
                 "cached_models_present": self._cached_models_present(),
+                "ocr_device_configured": OCR_DEVICE_CONFIGURED,
+                "ocr_device_resolved": self._device_resolution.resolved if self._device_resolution else None,
+                "ocr_device": self._device_resolution.as_status_dict() if self._device_resolution else None,
+                "ocr_device_resolution_error": self._device_resolution_error,
+                "paddle_cuda_compiled": PADDLE_CUDA_STATUS.cuda_compiled,
+                "paddle_cuda_device_count": PADDLE_CUDA_STATUS.cuda_device_count,
+                "paddle_cuda_status_error": PADDLE_CUDA_STATUS.error,
                 "last_state_change_utc": _utc_timestamp(self._last_state_change),
             }
 
@@ -203,44 +241,58 @@ class OCRRuntimeManager:
                 raise OCRRuntimeUnavailableError(self._message)
             return self._mobile, self._fallback
 
+    def resolved_device(self) -> str | None:
+        with self._lock:
+            return self._device_resolution.resolved if self._device_resolution else None
+
     def _initialize(self) -> None:
         try:
+            if self._device_resolution_error:
+                raise RuntimeError(self._device_resolution_error)
+            if self._device_resolution is None:
+                self._device_resolution = resolve_ocr_device(OCR_DEVICE_CONFIGURED, PADDLE_CUDA_STATUS)
+            device_resolution = self._device_resolution
+            with self._lock:
+                self._device_resolution = device_resolution
+
             initial_state = "loading_models" if self._cached_models_present() else "downloading_models"
             initial_message = (
-                "Cached OCR models found. Loading OCR models."
+                f"Cached OCR models found. Loading OCR models on {device_resolution.resolved}."
                 if initial_state == "loading_models"
-                else "Preparing OCR models. First launch may need to download model files."
+                else f"Preparing OCR models on {device_resolution.resolved}. First launch may need to download model files."
             )
             self._set_state(initial_state, initial_message)
 
-            logger.info("Initializing PaddleOCR primary OCR (mobile det+rec)...")
-            mobile = PaddleOCR(
-                text_detection_model_name="PP-OCRv5_mobile_det",
-                text_recognition_model_name="PP-OCRv5_mobile_rec",
-                use_doc_orientation_classify=False,
-                use_doc_unwarping=False,
-                use_textline_orientation=False,
-                enable_mkldnn=True,
+            logger.info(
+                "OCR device configured=%s resolved=%s cuda_compiled=%s cuda_device_count=%s fallback=%s",
+                device_resolution.configured,
+                device_resolution.resolved,
+                device_resolution.cuda_compiled,
+                device_resolution.cuda_device_count,
+                device_resolution.fallback_reason,
             )
-            logger.info("PaddleOCR primary OCR initialized.")
+            logger.info("Initializing PaddleOCR primary OCR (mobile det+rec)...")
+            mobile = create_paddle_ocr_engine(
+                text_detection_model_name=MOBILE_DETECTION_MODEL,
+                text_recognition_model_name=MOBILE_RECOGNITION_MODEL,
+                device_resolution=device_resolution,
+            )
+            logger.info("PaddleOCR primary OCR initialized on %s.", device_resolution.resolved)
 
-            self._set_state("loading_models", "Loading fallback OCR models.")
+            self._set_state("loading_models", f"Loading fallback OCR models on {device_resolution.resolved}.")
 
             logger.info("Initializing PaddleOCR fallback OCR (server det+rec)...")
-            fallback = PaddleOCR(
-                text_detection_model_name="PP-OCRv5_server_det",
-                text_recognition_model_name="PP-OCRv5_server_rec",
-                use_doc_orientation_classify=False,
-                use_doc_unwarping=False,
-                use_textline_orientation=False,
-                enable_mkldnn=True,
+            fallback = create_paddle_ocr_engine(
+                text_detection_model_name=FALLBACK_DETECTION_MODEL,
+                text_recognition_model_name=FALLBACK_RECOGNITION_MODEL,
+                device_resolution=device_resolution,
             )
-            logger.info("PaddleOCR fallback OCR initialized.")
+            logger.info("PaddleOCR fallback OCR initialized on %s.", device_resolution.resolved)
 
             with self._lock:
                 self._mobile = mobile
                 self._fallback = fallback
-                self._set_state_locked("ready", "OCR runtime ready.")
+                self._set_state_locked("ready", f"OCR runtime ready on {device_resolution.resolved}.")
         except Exception as exc:
             logger.error("Failed to initialize OCR runtime: %s", exc)
             logger.error(traceback.format_exc())
@@ -937,6 +989,7 @@ async def process_image(file: UploadFile = File(...)):
         total_ms = (time.perf_counter() - total_start) * 1000.0
         profiling = {
             "path": path,
+            "ocr_device": runtime_manager.resolved_device(),
             "decode_ms": round(decode_ms, 2),
             "label_detect_ms": round(label_detect_ms, 2),
             "crop_ms": round(crop_ms, 2),

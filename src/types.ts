@@ -91,7 +91,7 @@ export type AudioResolution = {
   segments: AudioSegment[];
 };
 
-export type SeatAudioStatus = "idle" | "playing" | "skipped" | "error";
+export type SeatAudioStatus = "idle" | "ready" | "playing" | "skipped" | "error";
 
 export type SeatAudioResult = {
   lookupName: string | null;
