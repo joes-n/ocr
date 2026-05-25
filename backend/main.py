@@ -723,6 +723,28 @@ def run_recognition_on_detected_regions(
     return output, crop_debug
 
 
+def run_detect_crop_rec(
+    det_engine: TextDetection,
+    rec_engine: TextRecognition,
+    roi_img: np.ndarray,
+    *,
+    roi_bbox,
+) -> tuple[list, list[dict], list[dict], float, float]:
+    detection_start = time.perf_counter()
+    detections = run_text_detection(det_engine, roi_img)
+    detection_ms = (time.perf_counter() - detection_start) * 1000.0
+
+    recognition_start = time.perf_counter()
+    output, crop_debug = run_recognition_on_detected_regions(
+        rec_engine,
+        roi_img,
+        detections,
+        roi_bbox=roi_bbox,
+    )
+    recognition_ms = (time.perf_counter() - recognition_start) * 1000.0
+    return output, detections, crop_debug, detection_ms, recognition_ms
+
+
 def crop_bottom_roi(
     img: np.ndarray,
     *,
@@ -818,8 +840,9 @@ def _build_validation_attempt(
     ocr_ms: float,
     scored: dict,
     error: str | None = None,
+    extra: dict | None = None,
 ) -> dict:
-    return {
+    attempt = {
         "stage": stage,
         "engine": engine,
         "bbox": _bbox_dict(bbox),
@@ -833,6 +856,9 @@ def _build_validation_attempt(
         "confidence": scored.get("confidence"),
         "error": error,
     }
+    if extra:
+        attempt.update(extra)
+    return attempt
 
 
 def _select_best_attempt(attempts: list[dict]):
@@ -1069,7 +1095,13 @@ async def process_image(file: UploadFile = File(...)):
             )
 
         label_debug = {
-            "strategy": "multi_candidate_roi_score",
+            "strategy": "detect_crop_rec_primary_with_roi_fallbacks",
+            "primary_candidate": {
+                "stage": "bottom50_left60_detect_crop_rec",
+                "bottom_fraction": BOTTOM_ROI_FRACTION,
+                "left_fraction": LEFT_ROI_FRACTION,
+                "bbox": _bbox_dict(roi_candidates[0]["bbox"] if roi_candidates else None),
+            },
             "roi_candidates": [
                 {
                     "stage": candidate["stage"],
@@ -1093,39 +1125,53 @@ async def process_image(file: UploadFile = File(...)):
 
         mobile_ocr_ms = 0.0
         fallback_ocr_ms = 0.0
+        detect_rec_engine_init_ms = 0.0
+        detect_crop_rec_detection_ms = 0.0
+        detect_crop_rec_recognition_ms = 0.0
+        detect_crop_rec_ms = 0.0
         attempts = []
 
-        for candidate in roi_candidates:
-            attempt_start = time.perf_counter()
+        primary_candidate = roi_candidates[0] if roi_candidates else None
+        if primary_candidate is not None:
             output = []
+            detections = []
+            detected_crop_debug = []
             error = None
             try:
-                output = run_ocr(
-                    candidate["engine"],
-                    candidate["image"],
-                    box_offset=(candidate["bbox"][0], candidate["bbox"][1]),
+                det_engine, rec_engine, detect_rec_engine_init_ms = runtime_manager.get_debug_engines()
+                (
+                    output,
+                    detections,
+                    detected_crop_debug,
+                    detect_crop_rec_detection_ms,
+                    detect_crop_rec_recognition_ms,
+                ) = run_detect_crop_rec(
+                    det_engine,
+                    rec_engine,
+                    primary_candidate["image"],
+                    roi_bbox=primary_candidate["bbox"],
                 )
-            except Exception as mobile_exc:
-                error = str(mobile_exc)
-                label_debug["candidate_errors"].append({"stage": candidate["stage"], "error": error})
+                detect_crop_rec_ms = detect_crop_rec_detection_ms + detect_crop_rec_recognition_ms
+            except Exception as detect_crop_exc:
+                error = str(detect_crop_exc)
+                label_debug["candidate_errors"].append(
+                    {"stage": "bottom50_left60_detect_crop_rec", "error": error}
+                )
                 logger.error(
-                    "request_id=%s attempt=%s candidate=%s mobile OCR failed: %s",
+                    "request_id=%s attempt=%s candidate=bottom50_left60_detect_crop_rec failed: %s",
                     request_id,
                     attempt_number,
-                    candidate["stage"],
-                    mobile_exc,
+                    detect_crop_exc,
                 )
                 logger.error(traceback.format_exc())
 
-            ocr_ms = (time.perf_counter() - attempt_start) * 1000.0
-            mobile_ocr_ms += ocr_ms
             scored = score_ocr_items(output)
             attempt = {
-                "stage": candidate["stage"],
-                "engine": candidate["engine_label"],
-                "bbox": candidate["bbox"],
+                "stage": "bottom50_left60_detect_crop_rec",
+                "engine": "PP-OCRv5_mobile_TextDetection+PP-OCRv5_mobile_TextRecognition",
+                "bbox": primary_candidate["bbox"],
                 "output": output,
-                "ocr_ms": ocr_ms,
+                "ocr_ms": detect_crop_rec_ms,
                 "scored": scored,
                 "error": error,
             }
@@ -1139,12 +1185,81 @@ async def process_image(file: UploadFile = File(...)):
                     ocr_ms=attempt["ocr_ms"],
                     scored=attempt["scored"],
                     error=attempt["error"],
+                    extra={
+                        "detection_ms": _rounded(detect_crop_rec_detection_ms, 2),
+                        "recognition_ms": _rounded(detect_crop_rec_recognition_ms, 2),
+                        "detection_count": len(detections),
+                        "detected_crop_count": len(detected_crop_debug),
+                        "detections": detections[:20],
+                        "detected_crops": detected_crop_debug[:20],
+                    },
                 )
             )
 
         if not any(attempt["scored"]["is_complete"] for attempt in attempts):
+            for candidate in roi_candidates:
+                attempt_start = time.perf_counter()
+                output = []
+                error = None
+                try:
+                    output = run_ocr(
+                        candidate["engine"],
+                        candidate["image"],
+                        box_offset=(candidate["bbox"][0], candidate["bbox"][1]),
+                    )
+                except Exception as mobile_exc:
+                    error = str(mobile_exc)
+                    label_debug["candidate_errors"].append({"stage": candidate["stage"], "error": error})
+                    logger.error(
+                        "request_id=%s attempt=%s candidate=%s mobile OCR failed: %s",
+                        request_id,
+                        attempt_number,
+                        candidate["stage"],
+                        mobile_exc,
+                    )
+                    logger.error(traceback.format_exc())
+
+                ocr_ms = (time.perf_counter() - attempt_start) * 1000.0
+                mobile_ocr_ms += ocr_ms
+                scored = score_ocr_items(output)
+                attempt = {
+                    "stage": candidate["stage"],
+                    "engine": candidate["engine_label"],
+                    "bbox": candidate["bbox"],
+                    "output": output,
+                    "ocr_ms": ocr_ms,
+                    "scored": scored,
+                    "error": error,
+                }
+                attempts.append(attempt)
+                label_debug["validation_attempts"].append(
+                    _build_validation_attempt(
+                        stage=attempt["stage"],
+                        engine=attempt["engine"],
+                        bbox=attempt["bbox"],
+                        output=attempt["output"],
+                        ocr_ms=attempt["ocr_ms"],
+                        scored=attempt["scored"],
+                        error=attempt["error"],
+                    )
+                )
+
+        if not any(attempt["scored"]["is_complete"] for attempt in attempts):
             fallback_start = time.perf_counter()
-            fallback_output = run_ocr(ocr_fallback, img)
+            fallback_output = []
+            error = None
+            try:
+                fallback_output = run_ocr(ocr_fallback, img)
+            except Exception as fallback_exc:
+                error = str(fallback_exc)
+                label_debug["candidate_errors"].append({"stage": "server_full_frame_fallback", "error": error})
+                logger.error(
+                    "request_id=%s attempt=%s candidate=server_full_frame_fallback failed: %s",
+                    request_id,
+                    attempt_number,
+                    fallback_exc,
+                )
+                logger.error(traceback.format_exc())
             fallback_ocr_ms = (time.perf_counter() - fallback_start) * 1000.0
             fallback_scored = score_ocr_items(fallback_output)
             fallback_attempt = {
@@ -1154,7 +1269,7 @@ async def process_image(file: UploadFile = File(...)):
                 "output": fallback_output,
                 "ocr_ms": fallback_ocr_ms,
                 "scored": fallback_scored,
-                "error": None,
+                "error": error,
             }
             attempts.append(fallback_attempt)
             label_debug["validation_attempts"].append(
@@ -1165,6 +1280,7 @@ async def process_image(file: UploadFile = File(...)):
                     output=fallback_attempt["output"],
                     ocr_ms=fallback_attempt["ocr_ms"],
                     scored=fallback_attempt["scored"],
+                    error=fallback_attempt["error"],
                 )
             )
 
@@ -1189,7 +1305,11 @@ async def process_image(file: UploadFile = File(...)):
             "label_detect_ms": round(label_detect_ms, 2),
             "crop_ms": round(crop_ms, 2),
             "seg_ms": 0.0,
-            "ocr_ms": round(mobile_ocr_ms + fallback_ocr_ms, 2),
+            "ocr_ms": round(detect_crop_rec_ms + mobile_ocr_ms + fallback_ocr_ms, 2),
+            "detect_rec_engine_init_ms": round(detect_rec_engine_init_ms, 2),
+            "detect_crop_rec_detection_ms": round(detect_crop_rec_detection_ms, 2),
+            "detect_crop_rec_recognition_ms": round(detect_crop_rec_recognition_ms, 2),
+            "detect_crop_rec_ms": round(detect_crop_rec_ms, 2),
             "mobile_ocr_ms": round(mobile_ocr_ms, 2),
             "fallback_ocr_ms": round(fallback_ocr_ms, 2),
             "selected_score": _rounded(float(selected_scored.get("score") or 0.0), 4),
@@ -1331,18 +1451,18 @@ async def debug_compare_image(file: UploadFile = File(...)):
 
         det_engine, rec_engine, debug_engine_init_ms = runtime_manager.get_debug_engines()
 
-        detection_start = time.perf_counter()
-        detections = run_text_detection(det_engine, roi_img)
-        detection_ms = (time.perf_counter() - detection_start) * 1000.0
-
-        recognition_start = time.perf_counter()
-        detected_rec_output, detected_crop_debug = run_recognition_on_detected_regions(
+        (
+            detected_rec_output,
+            detections,
+            detected_crop_debug,
+            detection_ms,
+            recognition_ms,
+        ) = run_detect_crop_rec(
+            det_engine,
             rec_engine,
             roi_img,
-            detections,
             roi_bbox=roi_bbox,
         )
-        recognition_ms = (time.perf_counter() - recognition_start) * 1000.0
         detected_rec_scored = score_ocr_items(detected_rec_output)
         detected_crop_rec_ms = detection_ms + recognition_ms
 
