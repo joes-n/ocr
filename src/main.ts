@@ -20,6 +20,7 @@ const isChrome = /Chrome/.test(navigator.userAgent) && !/Edg|OPR/.test(navigator
 const hasCameraApi = Boolean(navigator.mediaDevices?.getUserMedia);
 const scanController = new ScanController("Ready");
 const isDebugRoute = window.location.pathname.replace(/\/$/, "") === "/debug";
+const debugCompareBackendUrl = "/debug/compare";
 
 let latestOCRResult: OCRResult | null = null;
 let latestOCRItems: OCRItem[] = [];
@@ -53,7 +54,7 @@ const renderDebugApp = (): string => `
     <section class="panel">
       <p><strong>Browser check:</strong> ${isChrome ? "Chrome detected" : "Please use desktop Chrome for camera scanning."}</p>
       <p><strong>Camera API:</strong> ${hasCameraApi ? "Available" : "Not available"}</p>
-      <p><strong>OCR backend:</strong> <code>${appConfig.ocrBackendUrl}</code></p>
+      <p><strong>Debug backend:</strong> <code>${debugCompareBackendUrl}</code></p>
       <p><strong>App mode:</strong> <span id="app-mode">Checking runtime...</span></p>
       <p><strong>Backend runtime:</strong> <span id="backend-runtime">Checking runtime...</span></p>
       <p id="runtime-message">Connecting to the local OCR service...</p>
@@ -252,6 +253,32 @@ type ParserDebug = {
   nameCandidates: Candidate[];
   selectedSeat: Candidate | null;
   selectedName: Candidate | null;
+};
+
+type DebugCompareResponse = {
+  error?: string;
+  results?: {
+    current_bottom_left_det_rec?: OCRItem[];
+    detect_crop_rec?: OCRItem[];
+  };
+  comparison?: {
+    faster_path?: string;
+    higher_scored_path?: string;
+    current_bottom_left_det_rec_score?: number;
+    detect_crop_rec_score?: number;
+    current_bottom_left_det_rec_is_complete?: boolean;
+    detect_crop_rec_is_complete?: boolean;
+    [key: string]: unknown;
+  };
+  profiling?: Record<string, unknown>;
+  debug?: {
+    request_id?: string;
+    attempt_number?: number | null;
+    attempt_dir?: string | null;
+    strategies?: Record<string, unknown>;
+    [key: string]: unknown;
+  };
+  service_state?: RuntimeStatus;
 };
 
 const setAppState = (stateLabel: string): void => {
@@ -971,6 +998,106 @@ const fetchOCRData = async (blob: Blob): Promise<OCRResponse> => {
   }
 };
 
+const fetchDebugCompareData = async (blob: Blob): Promise<DebugCompareResponse> => {
+  const formData = new FormData();
+  formData.append("file", blob, "frame.jpg");
+
+  const timeoutMs = Math.max(500, appConfig.scanTimeoutMs);
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(debugCompareBackendUrl, {
+      method: "POST",
+      body: formData,
+      signal: controller.signal,
+    });
+
+    let data: DebugCompareResponse | null = null;
+    try {
+      data = (await response.json()) as DebugCompareResponse;
+    } catch {
+      data = null;
+    }
+
+    if (data?.service_state) {
+      syncRuntimeStatus(data.service_state);
+    }
+
+    if (!response.ok) {
+      const message =
+        typeof data?.error === "string" && data.error.trim().length > 0
+          ? data.error
+          : `OCR debug backend returned ${response.status}`;
+      throw new Error(message);
+    }
+
+    if (data === null) {
+      throw new Error("OCR debug backend returned an unreadable response.");
+    }
+
+    if (typeof data.error === "string" && data.error.trim().length > 0) {
+      throw new Error(`OCR debug backend error: ${data.error}`);
+    }
+
+    return data;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+};
+
+const formatDebugStrategyLabel = (value: string | undefined): string => {
+  if (!value) {
+    return "-";
+  }
+
+  return value.replace(/_/g, " ");
+};
+
+const updateDebugCompareDisplay = (response: DebugCompareResponse): void => {
+  const currentItems = response.results?.current_bottom_left_det_rec ?? [];
+  const detectedItems = response.results?.detect_crop_rec ?? [];
+  const comparison = response.comparison ?? {};
+  const fasterPath = formatDebugStrategyLabel(comparison.faster_path);
+  const higherScoredPath = formatDebugStrategyLabel(comparison.higher_scored_path);
+  const currentScore = comparison.current_bottom_left_det_rec_score;
+  const detectedScore = comparison.detect_crop_rec_score;
+  const requestId = response.debug?.request_id ?? "-";
+  const attemptNumber = response.debug?.attempt_number;
+  const attemptDir = response.debug?.attempt_dir;
+
+  latestOCRItems = detectedItems;
+  latestOCRResult = null;
+
+  ocrSummaryElement.innerHTML = "<strong>Latest OCR result:</strong> Debug comparison";
+  resultNameElement.innerHTML = `<strong>Faster:</strong> ${fasterPath}`;
+  resultSeatElement.innerHTML = `<strong>Higher score:</strong> ${higherScoredPath}`;
+  resultConfidenceElement.innerHTML = `<strong>Scores:</strong> current ${
+    typeof currentScore === "number" ? currentScore.toFixed(4) : "-"
+  }, detect-crop-rec ${typeof detectedScore === "number" ? detectedScore.toFixed(4) : "-"}`;
+  ocrCountElement.innerHTML = `<strong>Lines:</strong> current ${currentItems.length}, detect-crop-rec ${detectedItems.length}`;
+  ocrRawElement.textContent = JSON.stringify(response.results ?? {}, null, 2);
+  backendPathElement.innerHTML = `<strong>Backend path:</strong> ${String(response.profiling?.path ?? "-")}`;
+  backendRequestElement.innerHTML = `<strong>Request ID:</strong> ${requestId}`;
+  backendAttemptElement.innerHTML = `<strong>Attempt:</strong> ${
+    attemptNumber && attemptDir ? `${attemptNumber} (${attemptDir})` : "-"
+  }`;
+  backendPassElement.innerHTML = `<strong>Selected pass:</strong> ${higherScoredPath}`;
+  parserStatusElement.innerHTML = `<strong>Parser status:</strong> current ${
+    comparison.current_bottom_left_det_rec_is_complete ? "complete" : "incomplete"
+  }, detect-crop-rec ${comparison.detect_crop_rec_is_complete ? "complete" : "incomplete"}`;
+  ocrDiagnosticsElement.textContent = JSON.stringify(
+    {
+      comparison,
+      profiling: response.profiling ?? null,
+      debug: response.debug ?? null,
+      serviceState: response.service_state ?? latestRuntimeStatus ?? null,
+    },
+    null,
+    2,
+  );
+};
+
 const scheduleContinuousScan = (): void => {
   if (!continuousScanEnabled) {
     return;
@@ -1003,9 +1130,89 @@ const setContinuousScanEnabled = (enabled: boolean): void => {
   void captureAndSendOCR({ initiatedByContinuousScan: true });
 };
 
+const captureAndSendDebugCompare = async (
+  options: { initiatedByContinuousScan?: boolean } = {}
+): Promise<void> => {
+  const initiatedByContinuousScan = options.initiatedByContinuousScan ?? false;
+
+  if (!cameraStream || isOCRInFlight) {
+    if (initiatedByContinuousScan && continuousScanEnabled) {
+      scheduleContinuousScan();
+    }
+    return;
+  }
+
+  if (!isRuntimeReady()) {
+    setCameraMessage(latestRuntimeStatus?.message ?? "OCR runtime is not ready yet.");
+    if (initiatedByContinuousScan && continuousScanEnabled) {
+      scheduleContinuousScan();
+    }
+    return;
+  }
+
+  const blob = await captureFrameBlob();
+  if (!blob) {
+    setCameraMessage("No video frame available yet. Wait for the preview to load and try again.");
+    if (initiatedByContinuousScan && continuousScanEnabled) {
+      scheduleContinuousScan();
+    }
+    return;
+  }
+
+  scanController.setState("Scanning");
+  isOCRInFlight = true;
+  updateActionAvailability();
+  setSampleStatus("sending debug comparison");
+  setConfirmedOperatorResult(null, null);
+  stopSeatAudioPlayback();
+  updateSeatAudioDisplay({
+    lookupName: null,
+    resolvedSeat: null,
+    sourceUrl: null,
+    status: "skipped",
+    message: "skipped (debug comparison)",
+  });
+
+  try {
+    const response = await fetchDebugCompareData(blob);
+    const currentComplete = response.comparison?.current_bottom_left_det_rec_is_complete ?? false;
+    const detectedComplete = response.comparison?.detect_crop_rec_is_complete ?? false;
+    scanController.setState(currentComplete || detectedComplete ? "Recognized" : "RetryNeeded");
+    updateDebugCompareDisplay(response);
+    setSampleStatus("completed debug comparison");
+    setCameraMessage(
+      `Debug comparison complete. Faster: ${formatDebugStrategyLabel(
+        response.comparison?.faster_path
+      )}. Higher score: ${formatDebugStrategyLabel(response.comparison?.higher_scored_path)}.`
+    );
+  } catch (error) {
+    scanController.setState("RetryNeeded");
+    updateDiagnosticsDisplay(null, null);
+    if (error instanceof DOMException && error.name === "AbortError") {
+      setCameraMessage(`OCR debug request timed out after ${Math.max(500, appConfig.scanTimeoutMs)}ms.`);
+    } else {
+      setCameraMessage(
+        error instanceof Error ? `OCR debug request failed: ${error.message}` : "OCR debug request failed."
+      );
+    }
+    setSampleStatus("failed");
+  } finally {
+    isOCRInFlight = false;
+    updateActionAvailability();
+    if (initiatedByContinuousScan && continuousScanEnabled && cameraStream) {
+      scheduleContinuousScan();
+    }
+  }
+};
+
 const captureAndSendOCR = async (
   options: { initiatedByContinuousScan?: boolean } = {}
 ): Promise<void> => {
+  if (isDebugRoute) {
+    await captureAndSendDebugCompare(options);
+    return;
+  }
+
   const initiatedByContinuousScan = options.initiatedByContinuousScan ?? false;
   if (!cameraStream && !isDebugRoute && !isOCRInFlight) {
     await startPreview();

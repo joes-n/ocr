@@ -99,7 +99,7 @@ def _configure_logging() -> logging.Logger:
 
 logger = _configure_logging()
 
-from paddleocr import PaddleOCR
+from paddleocr import PaddleOCR, TextDetection, TextRecognition
 
 try:
     from .ocr_device import OCRDeviceResolution, detect_paddle_cuda_status, resolve_ocr_device
@@ -177,12 +177,31 @@ def create_paddle_ocr_engine(
     )
 
 
+def create_text_detection_engine(*, device_resolution: OCRDeviceResolution) -> TextDetection:
+    return TextDetection(
+        model_name=MOBILE_DETECTION_MODEL,
+        device=device_resolution.resolved,
+        enable_mkldnn=device_resolution.enable_mkldnn,
+    )
+
+
+def create_text_recognition_engine(*, device_resolution: OCRDeviceResolution) -> TextRecognition:
+    return TextRecognition(
+        model_name=MOBILE_RECOGNITION_MODEL,
+        device=device_resolution.resolved,
+        enable_mkldnn=device_resolution.enable_mkldnn,
+    )
+
+
 class OCRRuntimeManager:
     def __init__(self, model_cache_dir: Path):
         self._model_cache_dir = model_cache_dir
         self._lock = threading.Lock()
+        self._debug_engine_lock = threading.Lock()
         self._mobile: PaddleOCR | None = None
         self._fallback: PaddleOCR | None = None
+        self._debug_detection: TextDetection | None = None
+        self._debug_recognition: TextRecognition | None = None
         self._device_resolution: OCRDeviceResolution | None = None
         self._device_resolution_error: str | None = None
         try:
@@ -240,6 +259,27 @@ class OCRRuntimeManager:
             if self._state != "ready" or self._mobile is None or self._fallback is None:
                 raise OCRRuntimeUnavailableError(self._message)
             return self._mobile, self._fallback
+
+    def get_debug_engines(self) -> tuple[TextDetection, TextRecognition, float]:
+        with self._lock:
+            if self._state != "ready":
+                raise OCRRuntimeUnavailableError(self._message)
+            device_resolution = self._device_resolution
+
+        if device_resolution is None:
+            raise OCRRuntimeUnavailableError("OCR device is not resolved.")
+
+        with self._debug_engine_lock:
+            if self._debug_detection is not None and self._debug_recognition is not None:
+                return self._debug_detection, self._debug_recognition, 0.0
+
+            init_start = time.perf_counter()
+            logger.info("Initializing debug TextDetection/TextRecognition on %s...", device_resolution.resolved)
+            self._debug_detection = create_text_detection_engine(device_resolution=device_resolution)
+            self._debug_recognition = create_text_recognition_engine(device_resolution=device_resolution)
+            init_ms = (time.perf_counter() - init_start) * 1000.0
+            logger.info("Debug TextDetection/TextRecognition initialized in %.2f ms.", init_ms)
+            return self._debug_detection, self._debug_recognition, init_ms
 
     def resolved_device(self) -> str | None:
         with self._lock:
@@ -487,9 +527,12 @@ def _normalize_ocr_output(raw_pages, inv_scale: float = 1.0, box_offset=(0, 0)):
     output = []
     for page in raw_pages:
         if isinstance(page, dict):
-            boxes = page.get("dt_polys") or []
-            texts = page.get("rec_texts") or []
-            confidences = page.get("rec_scores") or []
+            boxes = page.get("dt_polys")
+            texts = page.get("rec_texts")
+            confidences = page.get("rec_scores")
+            boxes = [] if boxes is None else boxes
+            texts = [] if texts is None else texts
+            confidences = [] if confidences is None else confidences
             count = min(len(texts), len(confidences))
             for idx in range(count):
                 text = str(texts[idx]).strip()
@@ -526,6 +569,158 @@ def run_ocr(ocr_engine: PaddleOCR, img: np.ndarray, box_offset=(0, 0)) -> list:
     inv_scale = (1.0 / scale) if scale != 0 else 1.0
     raw_pages = list(ocr_engine.predict(resized))
     return _normalize_ocr_output(raw_pages, inv_scale=inv_scale, box_offset=box_offset)
+
+
+def _page_res_dict(page) -> dict:
+    if isinstance(page, dict):
+        res = page.get("res")
+        return res if isinstance(res, dict) else page
+    for attr_name in ("json", "to_dict"):
+        attr = getattr(page, attr_name, None)
+        if attr is None:
+            continue
+        try:
+            value = attr() if callable(attr) else attr
+        except Exception:
+            continue
+        if isinstance(value, dict):
+            res = value.get("res")
+            return res if isinstance(res, dict) else value
+    return {}
+
+
+def _normalize_detection_output(raw_pages, inv_scale: float = 1.0, box_offset=(0, 0)) -> list[dict]:
+    output = []
+    for page in raw_pages:
+        page_res = _page_res_dict(page)
+        boxes = page_res.get("dt_polys")
+        scores = page_res.get("dt_scores")
+        boxes = [] if boxes is None else boxes
+        scores = [] if scores is None else scores
+        for idx, raw_box in enumerate(boxes):
+            quad = _normalize_quad(raw_box, inv_scale, box_offset)
+            if not quad:
+                continue
+            output.append(
+                {
+                    "box": quad,
+                    "confidence": float(scores[idx]) if idx < len(scores) else 0.0,
+                }
+            )
+    return output
+
+
+def run_text_detection(det_engine: TextDetection, img: np.ndarray, box_offset=(0, 0)) -> list[dict]:
+    resized, scale = _resize_for_ocr(img)
+    inv_scale = (1.0 / scale) if scale != 0 else 1.0
+    raw_pages = list(det_engine.predict(resized, batch_size=1))
+    return _normalize_detection_output(raw_pages, inv_scale=inv_scale, box_offset=box_offset)
+
+
+def _normalize_recognition_output(raw_pages) -> tuple[str, float] | None:
+    for page in raw_pages:
+        page_res = _page_res_dict(page)
+        text = str(page_res.get("rec_text", "")).strip()
+        if not text:
+            continue
+        try:
+            confidence = float(page_res.get("rec_score", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        return text, confidence
+    return None
+
+
+def _quad_bounds(quad: list) -> tuple[float, float, float, float] | None:
+    if not quad:
+        return None
+    xs = []
+    ys = []
+    for point in quad:
+        arr = np.asarray(point).reshape(-1)
+        if arr.size < 2:
+            continue
+        xs.append(float(arr[0]))
+        ys.append(float(arr[1]))
+    if not xs or not ys:
+        return None
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def crop_quad_region(img: np.ndarray, quad: list, pad_fraction: float = 0.08):
+    bounds = _quad_bounds(quad)
+    if bounds is None:
+        return None, None
+
+    min_x, min_y, max_x, max_y = bounds
+    img_h, img_w = img.shape[:2]
+    width = max(1.0, max_x - min_x)
+    height = max(1.0, max_y - min_y)
+    pad_x = max(3, int(width * pad_fraction))
+    pad_y = max(3, int(height * pad_fraction))
+    x1 = max(0, int(np.floor(min_x)) - pad_x)
+    y1 = max(0, int(np.floor(min_y)) - pad_y)
+    x2 = min(img_w, int(np.ceil(max_x)) + pad_x)
+    y2 = min(img_h, int(np.ceil(max_y)) + pad_y)
+    if x2 <= x1 or y2 <= y1:
+        return None, None
+    return img[y1:y2, x1:x2], (x1, y1, x2 - x1, y2 - y1)
+
+
+def _offset_quad(quad: list, x_offset: int, y_offset: int) -> list:
+    return [[float(point[0]) + x_offset, float(point[1]) + y_offset] for point in quad if len(point) >= 2]
+
+
+def run_recognition_on_detected_regions(
+    rec_engine: TextRecognition,
+    roi_img: np.ndarray,
+    detections: list[dict],
+    *,
+    roi_bbox,
+    max_regions: int = 12,
+) -> tuple[list, list[dict]]:
+    output = []
+    crop_debug = []
+    x_offset, y_offset = roi_bbox[0], roi_bbox[1]
+
+    ordered_detections = sorted(
+        detections,
+        key=lambda detection: (
+            _quad_bounds(detection.get("box") or [])[1] if _quad_bounds(detection.get("box") or []) else 0,
+            _quad_bounds(detection.get("box") or [])[0] if _quad_bounds(detection.get("box") or []) else 0,
+        ),
+    )
+
+    for idx, detection in enumerate(ordered_detections[:max_regions]):
+        crop, crop_bbox = crop_quad_region(roi_img, detection.get("box") or [])
+        if crop is None or crop_bbox is None:
+            crop_debug.append({"index": idx, "detected_box": detection.get("box"), "skipped": True})
+            continue
+
+        rec_result = _normalize_recognition_output(list(rec_engine.predict(crop)))
+        crop_entry = {
+            "index": idx,
+            "detected_box": detection.get("box"),
+            "detection_confidence": detection.get("confidence"),
+            "crop_bbox": _bbox_dict(crop_bbox),
+            "skipped": rec_result is None,
+        }
+        if rec_result is None:
+            crop_debug.append(crop_entry)
+            continue
+
+        text, confidence = rec_result
+        crop_entry.update({"text": text, "confidence": confidence})
+        crop_debug.append(crop_entry)
+        output.append(
+            {
+                "box": _offset_quad(detection.get("box") or [], x_offset, y_offset),
+                "text": text,
+                "confidence": confidence,
+            }
+        )
+
+    return output, crop_debug
 
 
 def crop_bottom_roi(
@@ -1078,6 +1273,222 @@ async def process_image(file: UploadFile = File(...)):
                 "results": [],
                 "profiling": profiling,
                 "debug": payload["debug"],
+                "service_state": runtime_manager.status(),
+            },
+        )
+
+
+@app.post("/debug")
+@app.post("/debug/compare")
+async def debug_compare_image(file: UploadFile = File(...)):
+    logger.info("Received request /debug")
+    total_start = time.perf_counter()
+    request_id = uuid.uuid4().hex[:8]
+    debug_dir, attempt_number = _create_debug_dir()
+    artifacts = {}
+
+    try:
+        try:
+            ocr_mobile, _ = runtime_manager.get_engines()
+        except OCRRuntimeUnavailableError as exc:
+            return _service_unavailable_response(str(exc), request_id=request_id, total_start=total_start)
+
+        contents = await file.read()
+
+        decode_start = time.perf_counter()
+        nparr = np.frombuffer(contents, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        decode_ms = (time.perf_counter() - decode_start) * 1000.0
+
+        if img is None:
+            raise ValueError("Unable to decode image from upload")
+
+        artifacts["capture"] = _save_image_artifact(
+            debug_dir,
+            _make_artifact_entry("debug_capture.jpg", enabled=True, required=True),
+            img,
+        )
+
+        image_shape = {"width": int(img.shape[1]), "height": int(img.shape[0])}
+
+        crop_start = time.perf_counter()
+        roi_img, roi_bbox = crop_bottom_roi(
+            img,
+            bottom_fraction=BOTTOM_ROI_FRACTION,
+            left_fraction=LEFT_ROI_FRACTION,
+        )
+        crop_ms = (time.perf_counter() - crop_start) * 1000.0
+        artifacts["debug_roi_bottom50_left60"] = _save_image_artifact(
+            debug_dir,
+            _make_artifact_entry("debug_roi_bottom50_left60.jpg", enabled=DEBUG_SAVE_IMAGES),
+            roi_img,
+        )
+
+        current_start = time.perf_counter()
+        current_output = run_ocr(ocr_mobile, roi_img, box_offset=(roi_bbox[0], roi_bbox[1]))
+        current_ms = (time.perf_counter() - current_start) * 1000.0
+        current_scored = score_ocr_items(current_output)
+
+        det_engine, rec_engine, debug_engine_init_ms = runtime_manager.get_debug_engines()
+
+        detection_start = time.perf_counter()
+        detections = run_text_detection(det_engine, roi_img)
+        detection_ms = (time.perf_counter() - detection_start) * 1000.0
+
+        recognition_start = time.perf_counter()
+        detected_rec_output, detected_crop_debug = run_recognition_on_detected_regions(
+            rec_engine,
+            roi_img,
+            detections,
+            roi_bbox=roi_bbox,
+        )
+        recognition_ms = (time.perf_counter() - recognition_start) * 1000.0
+        detected_rec_scored = score_ocr_items(detected_rec_output)
+        detected_crop_rec_ms = detection_ms + recognition_ms
+
+        current_score = float(current_scored.get("score") or 0.0)
+        detected_rec_score = float(detected_rec_scored.get("score") or 0.0)
+        faster_path = (
+            "detect_crop_rec"
+            if detected_crop_rec_ms < current_ms
+            else "current_bottom_left_det_rec"
+        )
+        higher_scored_path = (
+            "detect_crop_rec"
+            if detected_rec_score > current_score
+            else "current_bottom_left_det_rec"
+        )
+
+        total_ms = (time.perf_counter() - total_start) * 1000.0
+        profiling = {
+            "path": "debug_compare_bottom_left",
+            "decode_ms": round(decode_ms, 2),
+            "crop_ms": round(crop_ms, 2),
+            "current_bottom_left_det_rec_ms": round(current_ms, 2),
+            "debug_engine_init_ms": round(debug_engine_init_ms, 2),
+            "detect_crop_rec_detection_ms": round(detection_ms, 2),
+            "detect_crop_rec_recognition_ms": round(recognition_ms, 2),
+            "detect_crop_rec_ms": round(detected_crop_rec_ms, 2),
+            "total_ms": round(total_ms, 2),
+        }
+
+        strategies = {
+            "current_bottom_left_det_rec": {
+                "description": "Crop bottom-left ROI, then run mobile PaddleOCR detection+recognition.",
+                "roi_bbox": _bbox_dict(roi_bbox),
+                "output_count": len(current_output),
+                "output_preview": current_output[:10],
+                "profiling_ms": round(current_ms, 2),
+                "scoring": _compact_scored_candidate(current_scored),
+            },
+            "detect_crop_rec": {
+                "description": (
+                    "Crop bottom-left ROI, run mobile TextDetection, crop detected text boxes, "
+                    "then run mobile TextRecognition on those crops."
+                ),
+                "roi_bbox": _bbox_dict(roi_bbox),
+                "detection_count": len(detections),
+                "detections": detections[:20],
+                "detected_crop_count": len(detected_crop_debug),
+                "detected_crops": detected_crop_debug[:20],
+                "output_count": len(detected_rec_output),
+                "output_preview": detected_rec_output[:10],
+                "profiling_ms": round(detected_crop_rec_ms, 2),
+                "scoring": _compact_scored_candidate(detected_rec_scored),
+            },
+        }
+
+        response_debug = {
+            "request_id": request_id,
+            "attempt_number": attempt_number,
+            "attempt_dir": debug_dir.name if debug_dir is not None else None,
+            "artifacts_dir": str(debug_dir) if debug_dir is not None else None,
+            "image_shape": image_shape,
+            "artifacts": artifacts,
+            "roi_bbox": _bbox_dict(roi_bbox),
+            "strategies": strategies,
+        }
+        comparison = {
+            "faster_path": faster_path,
+            "higher_scored_path": higher_scored_path,
+            "current_bottom_left_det_rec_score": _rounded(current_score, 4),
+            "detect_crop_rec_score": _rounded(detected_rec_score, 4),
+            "current_bottom_left_det_rec_is_complete": bool(current_scored.get("is_complete")),
+            "detect_crop_rec_is_complete": bool(detected_rec_scored.get("is_complete")),
+            "note": "Higher score is parse-validity based. True accuracy still requires a labeled expected name/seat.",
+        }
+        diag = {
+            "request_id": request_id,
+            "timestamp_utc": _utc_timestamp(),
+            "profiling": profiling,
+            "comparison": comparison,
+            "debug": response_debug,
+        }
+        if debug_dir is not None:
+            artifacts["diag"] = _make_artifact_entry("diag.json", enabled=True, required=True)
+            artifacts["diag"]["saved"] = _write_diag_json(debug_dir, diag)
+            response_debug["artifacts"] = artifacts
+            diag["debug"] = response_debug
+            _write_diag_json(debug_dir, diag)
+
+        logger.info(
+            "request_id=%s attempt=%s debug_comparison=%s profiling=%s",
+            request_id,
+            attempt_number,
+            comparison,
+            profiling,
+        )
+        return {
+            "results": {
+                "current_bottom_left_det_rec": current_output,
+                "detect_crop_rec": detected_rec_output,
+            },
+            "comparison": comparison,
+            "profiling": profiling,
+            "debug": response_debug,
+            "service_state": runtime_manager.status(),
+        }
+
+    except Exception as exc:
+        logger.error(
+            "request_id=%s attempt=%s error processing debug image: %s",
+            request_id,
+            attempt_number,
+            exc,
+        )
+        logger.error(traceback.format_exc())
+        total_ms = (time.perf_counter() - total_start) * 1000.0
+        profiling = {"total_ms": round(total_ms, 2)}
+        response_debug = {
+            "request_id": request_id,
+            "attempt_number": attempt_number,
+            "attempt_dir": debug_dir.name if debug_dir is not None else None,
+            "artifacts_dir": str(debug_dir) if debug_dir is not None else None,
+            "artifacts": artifacts,
+            "error": str(exc),
+        }
+        if debug_dir is not None:
+            artifacts["diag"] = _make_artifact_entry("diag.json", enabled=True, required=True)
+            artifacts["diag"]["saved"] = _write_diag_json(
+                debug_dir,
+                {
+                    "request_id": request_id,
+                    "timestamp_utc": _utc_timestamp(),
+                    "profiling": profiling,
+                    "debug": response_debug,
+                    "error": str(exc),
+                },
+            )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": str(exc),
+                "results": {
+                    "current_bottom_left_det_rec": [],
+                    "detect_crop_rec": [],
+                },
+                "profiling": profiling,
+                "debug": response_debug,
                 "service_state": runtime_manager.status(),
             },
         )

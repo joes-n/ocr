@@ -95,6 +95,13 @@ cd /home/raner/proj_ocr/backend
 python test_script.py /absolute/path/to/your-image.jpg
 ```
 
+Open `/debug` in the browser for the comparison page. The page posts captured frames to `/debug/compare`, which compares the current bottom-left ROI det+rec path against the TextDetection -> crop -> TextRecognition path.
+
+```bash
+curl -X POST http://127.0.0.1:8000/debug/compare \
+  -F "file=@/absolute/path/to/your-image.jpg"
+```
+
 For a labeled accuracy pass, keep ticket captures outside the repo and create a JSON or CSV manifest with image path, expected name, and expected seat:
 
 ```json
