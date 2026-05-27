@@ -13,6 +13,7 @@ export type OCRResult = {
 };
 
 export type OCRProfiling = {
+  mode?: "fast" | "accurate";
   path?: string;
   decode_ms?: number;
   label_detect_ms?: number;

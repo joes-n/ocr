@@ -1010,8 +1010,12 @@ async def audio_asset(asset_path: str):
 
 
 @app.post("/ocr")
-async def process_image(file: UploadFile = File(...)):
-    logger.info("Received request /ocr")
+async def process_image(file: UploadFile = File(...), mode: str = "accurate"):
+    mode = mode.strip().lower()
+    if mode not in {"fast", "accurate"}:
+        raise HTTPException(status_code=400, detail="mode must be fast or accurate")
+
+    logger.info("Received request /ocr mode=%s", mode)
     total_start = time.perf_counter()
     request_id = uuid.uuid4().hex[:8]
     debug_dir, attempt_number = _create_debug_dir()
@@ -1051,17 +1055,20 @@ async def process_image(file: UploadFile = File(...)):
                 "left_fraction": LEFT_ROI_FRACTION,
                 "artifact_key": "roi_bottom50_left60",
                 "artifact_filename": "roi_bottom50_left60.jpg",
-            },
-            {
-                "stage": "bottom60_fullwidth_mobile",
-                "engine": ocr_mobile,
-                "engine_label": "PP-OCRv5_mobile_det+PP-OCRv5_mobile_rec",
-                "bottom_fraction": BOTTOM_WIDE_ROI_FRACTION,
-                "left_fraction": FULL_WIDTH_ROI_FRACTION,
-                "artifact_key": "roi_bottom60_fullwidth",
-                "artifact_filename": "roi_bottom60_fullwidth.jpg",
-            },
+            }
         ]
+        if mode == "accurate":
+            roi_specs.append(
+                {
+                    "stage": "bottom60_fullwidth_mobile",
+                    "engine": ocr_mobile,
+                    "engine_label": "PP-OCRv5_mobile_det+PP-OCRv5_mobile_rec",
+                    "bottom_fraction": BOTTOM_WIDE_ROI_FRACTION,
+                    "left_fraction": FULL_WIDTH_ROI_FRACTION,
+                    "artifact_key": "roi_bottom60_fullwidth",
+                    "artifact_filename": "roi_bottom60_fullwidth.jpg",
+                }
+            )
         roi_candidates = []
         for spec in roi_specs:
             roi_img, roi_bbox = crop_bottom_roi(
@@ -1095,7 +1102,8 @@ async def process_image(file: UploadFile = File(...)):
             )
 
         label_debug = {
-            "strategy": "detect_crop_rec_primary_with_roi_fallbacks",
+            "mode": mode,
+            "strategy": "detect_crop_rec_fast" if mode == "fast" else "detect_crop_rec_primary_with_roi_fallbacks",
             "primary_candidate": {
                 "stage": "bottom50_left60_detect_crop_rec",
                 "bottom_fraction": BOTTOM_ROI_FRACTION,
@@ -1196,7 +1204,7 @@ async def process_image(file: UploadFile = File(...)):
                 )
             )
 
-        if not any(attempt["scored"]["is_complete"] for attempt in attempts):
+        if mode == "accurate" and not any(attempt["scored"]["is_complete"] for attempt in attempts):
             for candidate in roi_candidates:
                 attempt_start = time.perf_counter()
                 output = []
@@ -1244,7 +1252,7 @@ async def process_image(file: UploadFile = File(...)):
                     )
                 )
 
-        if not any(attempt["scored"]["is_complete"] for attempt in attempts):
+        if mode == "accurate" and not any(attempt["scored"]["is_complete"] for attempt in attempts):
             fallback_start = time.perf_counter()
             fallback_output = []
             error = None
@@ -1299,6 +1307,7 @@ async def process_image(file: UploadFile = File(...)):
 
         total_ms = (time.perf_counter() - total_start) * 1000.0
         profiling = {
+            "mode": mode,
             "path": path,
             "ocr_device": runtime_manager.resolved_device(),
             "decode_ms": round(decode_ms, 2),
@@ -1343,9 +1352,10 @@ async def process_image(file: UploadFile = File(...)):
             _write_diag_json(debug_dir, payload["diag"])
 
         logger.info(
-            "request_id=%s attempt=%s profiling=%s",
+            "request_id=%s attempt=%s mode=%s profiling=%s",
             request_id,
             attempt_number,
+            mode,
             profiling,
         )
         return {

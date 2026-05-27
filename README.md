@@ -38,17 +38,17 @@ Example JPEGs are checked in for OCR smoke tests and timing runs: `text_line_*.j
 
 1. The browser UI starts a camera preview in desktop Chrome.
 2. The user captures one frame on demand or enables continuous 1-second capture, and each frame is uploaded to `POST /ocr`.
-3. The backend crops the lower-left region first and runs the mobile PaddleOCR pass.
-4. If the ROI pass returns nothing, the backend falls back to a full-frame server OCR pass.
+3. Continuous scan uses `mode=fast`, which runs only the lower-left detect-crop-rec pass before moving to the next frame.
+4. Manual `Read Again` uses `mode=accurate`, which can run the slower ROI and full-frame fallback passes.
 5. The frontend parses OCR lines and tries to extract:
    - `holderName`
    - `seatNumber` matching `([0-9]{2}[A-Z]{2}[0-9]{2})`
-6. The frontend normalized-exact-matches the parsed name against `names.csv` and enables manual Male/Female audio playback. In `/debug`, OCR still autoplays the legacy `audio/<Seat No>.wav`.
+6. The frontend normalized-exact-matches OCR name candidates against `names.csv`; `/debug` autoplays the legacy `audio/<Seat No>.wav`, while the main operator screen enables manual Male/Female buttons after a match.
 7. The UI shows parsed fields, raw OCR lines, diagnostics, seat-audio status, and scan state.
 
 ## Runtime Endpoints
 
-- `POST /ocr`: OCR request endpoint
+- `POST /ocr`: OCR request endpoint; accepts `mode=fast` for continuous scan or `mode=accurate` for manual fallback-capable reads
 - `GET /healthz`: lightweight process health endpoint
 - `GET /runtime/status`: OCR-model readiness, packaged-app runtime state, and seat-asset paths
 - `POST /shutdown`: localhost-only shutdown endpoint, enabled only in packaged mode
@@ -270,7 +270,7 @@ docker run --rm -p 8000:8000 -e PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True paddl
 
 - Camera capture is still intended for desktop Chrome.
 - The backend currently allows CORS from any origin.
-- OCR responses return `results`, `profiling`, `debug`, and `service_state`; `debug.label_detection.validation_attempts` lists the ROI/fallback candidates that were scored.
+- OCR responses return `results`, `profiling`, `debug`, and `service_state`; `profiling.mode` reports `fast` or `accurate`, and `debug.label_detection.validation_attempts` lists the OCR candidates that were scored.
 - First launch may take longer while OCR models are downloaded or loaded.
 - Write debug artifacts to `ocr_debug/` with `OCR_DEBUG_DIR=./ocr_debug OCR_DEBUG_SAVE_IMAGES=true python main.py`.
 - OS-specific setup details live in `SETUP.md`.

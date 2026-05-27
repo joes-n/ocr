@@ -39,6 +39,10 @@ let runtimePollTimer: number | null = null;
 let continuousScanEnabled = false;
 let continuousScanTimer: number | null = null;
 let lastContinuousAudioSeat: string | null = null;
+let debugContinuousLatencyTotalMs = 0;
+let debugContinuousLatencyCount = 0;
+let debugMatchedContinuousLatencyTotalMs = 0;
+let debugMatchedContinuousLatencyCount = 0;
 
 const CONTINUOUS_SCAN_INTERVAL_MS = 1000;
 
@@ -91,6 +95,9 @@ const renderDebugApp = (): string => `
         <p id="result-confidence"><strong>Confidence:</strong> -</p>
         <p id="audio-seat"><strong>CSV seat:</strong> -</p>
         <p id="audio-status"><strong>Seat audio:</strong> idle</p>
+        <p id="latency-status"><strong>Latency:</strong> -</p>
+        <p id="average-latency-status"><strong>Average latency in continuous scan (including no match):</strong> -</p>
+        <p id="matched-average-latency-status"><strong>Average latency in continuous scan:</strong> -</p>
         <div class="audio-controls">
           <button id="male-audio-btn" type="button" disabled>Male Audio</button>
           <button id="female-audio-btn" type="button" disabled>Female Audio</button>
@@ -161,6 +168,9 @@ const renderOperatorApp = (): string => `
       <p id="result-confidence"><strong>Confidence:</strong> -</p>
       <p id="audio-seat"><strong>CSV seat:</strong> -</p>
       <p id="audio-status"><strong>Seat audio:</strong> idle</p>
+      <p id="latency-status"><strong>Latency:</strong> -</p>
+      <p id="average-latency-status"><strong>Average latency in continuous scan (including no match):</strong> -</p>
+      <p id="matched-average-latency-status"><strong>Average latency in continuous scan:</strong> -</p>
       <p id="ocr-count"><strong>Lines:</strong> 0</p>
       <pre id="ocr-raw">[]</pre>
       <p id="backend-path"><strong>Backend path:</strong> -</p>
@@ -192,6 +202,9 @@ const resultSeatElement = document.querySelector<HTMLParagraphElement>("#result-
 const resultConfidenceElement = document.querySelector<HTMLParagraphElement>("#result-confidence");
 const audioSeatElement = document.querySelector<HTMLParagraphElement>("#audio-seat");
 const audioStatusElement = document.querySelector<HTMLParagraphElement>("#audio-status");
+const latencyStatusElement = document.querySelector<HTMLParagraphElement>("#latency-status");
+const averageLatencyStatusElement = document.querySelector<HTMLParagraphElement>("#average-latency-status");
+const matchedAverageLatencyStatusElement = document.querySelector<HTMLParagraphElement>("#matched-average-latency-status");
 const ocrCountElement = document.querySelector<HTMLParagraphElement>("#ocr-count");
 const ocrRawElement = document.querySelector<HTMLPreElement>("#ocr-raw");
 const backendPathElement = document.querySelector<HTMLParagraphElement>("#backend-path");
@@ -226,6 +239,9 @@ if (
   !resultConfidenceElement ||
   !audioSeatElement ||
   !audioStatusElement ||
+  !latencyStatusElement ||
+  !averageLatencyStatusElement ||
+  !matchedAverageLatencyStatusElement ||
   !maleAudioButton ||
   !femaleAudioButton ||
   !ocrCountElement ||
@@ -261,6 +277,13 @@ type ParserDebug = {
   nameCandidates: Candidate[];
   selectedSeat: Candidate | null;
   selectedName: Candidate | null;
+};
+
+type OCRMode = "fast" | "accurate";
+
+type NameLookupCandidate = {
+  text: string;
+  confidence: number;
 };
 
 type DebugCompareResponse = {
@@ -329,6 +352,22 @@ const updateScanModeStatus = (): void => {
 const updateSeatAudioDisplay = (result: SeatAudioResult): void => {
   audioSeatElement.innerHTML = `<strong>CSV seat:</strong> ${result.resolvedSeat ?? "-"}`;
   audioStatusElement.innerHTML = `<strong>Seat audio:</strong> ${result.message}`;
+};
+
+const formatMilliseconds = (value: unknown): string => (typeof value === "number" ? `${value.toFixed(1)} ms` : "-");
+
+const updateLatencyDisplay = (
+  latencyMs: unknown,
+  averageLatencyMs: number | null,
+  matchedAverageLatencyMs: number | null,
+): void => {
+  latencyStatusElement.innerHTML = `<strong>Latency:</strong> ${formatMilliseconds(latencyMs)}`;
+  averageLatencyStatusElement.innerHTML = `<strong>Average latency in continuous scan (including no match):</strong> ${
+    averageLatencyMs === null ? "-" : `${averageLatencyMs.toFixed(1)} ms`
+  }`;
+  matchedAverageLatencyStatusElement.innerHTML = `<strong>Average latency in continuous scan:</strong> ${
+    matchedAverageLatencyMs === null ? "-" : `${matchedAverageLatencyMs.toFixed(1)} ms`
+  }`;
 };
 
 const getPackagedAssetHint = (): string | null => {
@@ -518,45 +557,7 @@ const formatAudioCandidateList = (candidates: SeatAudioCandidate[]): string => {
   return `${candidates[0].fileName} or fallback ${candidates[1].fileName}`;
 };
 
-const resolveSeatAudio = async (lookupName: string | null): Promise<SeatAudioResult> => {
-  if (!lookupName) {
-    stopSeatAudioPlayback();
-    return {
-      lookupName: null,
-      resolvedSeat: null,
-      sourceUrl: null,
-      status: "skipped",
-      message: "skipped (no parsed name)",
-    };
-  }
-
-  let directory: Map<string, string>;
-  try {
-    directory = await ensureNameSeatDirectory();
-  } catch (error) {
-    stopSeatAudioPlayback();
-    const message = withPackagedAssetHint(error instanceof Error ? error.message : "Unable to load names.csv");
-    return {
-      lookupName,
-      resolvedSeat: null,
-      sourceUrl: null,
-      status: "error",
-      message: `error (${message})`,
-    };
-  }
-
-  const resolvedSeat = directory.get(normalizeNameLookupKey(lookupName)) ?? null;
-  if (!resolvedSeat) {
-    stopSeatAudioPlayback();
-    return {
-      lookupName,
-      resolvedSeat: null,
-      sourceUrl: null,
-      status: "skipped",
-      message: `skipped (no CSV match for ${lookupName})`,
-    };
-  }
-
+const createReadySeatAudioResult = (lookupName: string, resolvedSeat: string): SeatAudioResult => {
   const legacyFileName = getSeatAudioFileName(resolvedSeat, "legacy");
   return {
     lookupName,
@@ -635,10 +636,73 @@ const playResolvedLegacyAudio = async (audioResult: SeatAudioResult): Promise<Se
   return playbackResult;
 };
 
-const getConfidentLookupName = (parsed: OCRResult | null, parserDebug: ParserDebug): string | null => {
-  const name = parsed?.holderName.trim() || parserDebug.selectedName?.text.trim() || null;
-  const confidence = parsed?.confidence.name ?? parserDebug.selectedName?.confidence ?? 0;
-  return name && confidence >= appConfig.confidenceThresholdName ? name : null;
+const getNameLookupCandidates = (parsed: OCRResult | null, parserDebug: ParserDebug): NameLookupCandidate[] => {
+  const candidates: NameLookupCandidate[] = [];
+  if (parsed?.holderName.trim()) {
+    candidates.push({ text: parsed.holderName.trim(), confidence: parsed.confidence.name });
+  }
+
+  for (const candidate of parserDebug.nameCandidates) {
+    candidates.push({ text: candidate.text, confidence: candidate.confidence });
+  }
+
+  const seen = new Set<string>();
+  return candidates.filter((candidate) => {
+    const key = normalizeNameLookupKey(candidate.text);
+    if (!key || seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+};
+
+const resolveSeatAudioFromNameCandidates = async (
+  candidates: NameLookupCandidate[],
+): Promise<SeatAudioResult> => {
+  if (candidates.length === 0) {
+    return {
+      lookupName: null,
+      resolvedSeat: null,
+      sourceUrl: null,
+      status: "skipped",
+      message: "skipped (no parsed name)",
+    };
+  }
+
+  let directory: Map<string, string>;
+  try {
+    directory = await ensureNameSeatDirectory();
+  } catch (error) {
+    const message = withPackagedAssetHint(error instanceof Error ? error.message : "Unable to load names.csv");
+    return {
+      lookupName: candidates[0].text,
+      resolvedSeat: null,
+      sourceUrl: null,
+      status: "error",
+      message: `error (${message})`,
+    };
+  }
+
+  for (const candidate of candidates) {
+    const resolvedSeat = directory.get(normalizeNameLookupKey(candidate.text)) ?? null;
+    if (resolvedSeat) {
+      return createReadySeatAudioResult(candidate.text, resolvedSeat);
+    }
+  }
+
+  const confidentCandidate = candidates.find(
+    (candidate) => candidate.confidence >= appConfig.confidenceThresholdName,
+  );
+  const lookupName = confidentCandidate?.text ?? candidates[0].text;
+  return {
+    lookupName,
+    resolvedSeat: null,
+    sourceUrl: null,
+    status: "skipped",
+    message: `skipped (no CSV match for ${lookupName})`,
+  };
 };
 
 const updateDiagnosticsDisplay = (response: OCRResponse | null, parserDebug: ParserDebug | null): void => {
@@ -735,7 +799,7 @@ const isRuntimeReady = (): boolean => Boolean(latestRuntimeStatus?.is_ready);
 
 const updateActionAvailability = (): void => {
   const canStartCamera = hasCameraApi && isChrome && isRuntimeReady() && !cameraStream;
-  const canPlayResolvedAudio = Boolean(latestConfirmedAudioResult?.sourceUrl) && !isOCRInFlight;
+  const canPlayResolvedAudio = Boolean(latestConfirmedAudioResult?.sourceUrl);
   startCameraButton.disabled = !canStartCamera;
   captureOCRButton.disabled = isDebugRoute
     ? !cameraStream || isOCRInFlight || !isRuntimeReady() || continuousScanEnabled
@@ -1043,7 +1107,13 @@ const parseResultFromOCRItems = (items: OCRItem[]): { result: OCRResult | null; 
   };
 };
 
-const fetchOCRData = async (blob: Blob): Promise<OCRResponse> => {
+const buildOCRBackendUrl = (mode: OCRMode): string => {
+  const url = new URL(appConfig.ocrBackendUrl, window.location.origin);
+  url.searchParams.set("mode", mode);
+  return url.toString();
+};
+
+const fetchOCRData = async (blob: Blob, mode: OCRMode): Promise<OCRResponse> => {
   const formData = new FormData();
   formData.append("file", blob, "frame.jpg");
 
@@ -1052,7 +1122,7 @@ const fetchOCRData = async (blob: Blob): Promise<OCRResponse> => {
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(appConfig.ocrBackendUrl, {
+    const response = await fetch(buildOCRBackendUrl(mode), {
       method: "POST",
       body: formData,
       signal: controller.signal,
@@ -1151,10 +1221,7 @@ const updateDebugCompareDisplay = (response: DebugCompareResponse): void => {
   const currentItems = response.results?.current_bottom_left_det_rec ?? [];
   const detectedItems = response.results?.detect_crop_rec ?? [];
   const comparison = response.comparison ?? {};
-  const fasterPath = formatDebugStrategyLabel(comparison.faster_path);
   const higherScoredPath = formatDebugStrategyLabel(comparison.higher_scored_path);
-  const currentScore = comparison.current_bottom_left_det_rec_score;
-  const detectedScore = comparison.detect_crop_rec_score;
   const requestId = response.debug?.request_id ?? "-";
   const attemptNumber = response.debug?.attempt_number;
   const attemptDir = response.debug?.attempt_dir;
@@ -1163,11 +1230,6 @@ const updateDebugCompareDisplay = (response: DebugCompareResponse): void => {
   latestOCRResult = null;
 
   ocrSummaryElement.innerHTML = "<strong>Latest OCR result:</strong> Debug comparison";
-  resultNameElement.innerHTML = `<strong>Faster:</strong> ${fasterPath}`;
-  resultSeatElement.innerHTML = `<strong>Higher score:</strong> ${higherScoredPath}`;
-  resultConfidenceElement.innerHTML = `<strong>Scores:</strong> current ${
-    typeof currentScore === "number" ? currentScore.toFixed(4) : "-"
-  }, detect-crop-rec ${typeof detectedScore === "number" ? detectedScore.toFixed(4) : "-"}`;
   ocrCountElement.innerHTML = `<strong>Lines:</strong> current ${currentItems.length}, detect-crop-rec ${detectedItems.length}`;
   ocrRawElement.textContent = JSON.stringify(response.results ?? {}, null, 2);
   backendPathElement.innerHTML = `<strong>Backend path:</strong> ${String(response.profiling?.path ?? "-")}`;
@@ -1189,6 +1251,65 @@ const updateDebugCompareDisplay = (response: DebugCompareResponse): void => {
     null,
     2,
   );
+};
+
+const getSelectedNameCandidate = (parsed: OCRResult | null, parserDebug: ParserDebug): Candidate | null => {
+  if (parsed?.holderName.trim()) {
+    return { text: parsed.holderName.trim(), confidence: parsed.confidence.name, index: -1 };
+  }
+
+  return parserDebug.selectedName;
+};
+
+const getSelectedSeatCandidate = (parsed: OCRResult | null, parserDebug: ParserDebug): Candidate | null => {
+  if (parsed?.seatNumber.trim()) {
+    return { text: parsed.seatNumber.trim(), confidence: parsed.confidence.seat, index: -1 };
+  }
+
+  return parserDebug.selectedSeat;
+};
+
+const findNameCandidateConfidence = (
+  lookupName: string | null,
+  candidates: NameLookupCandidate[],
+): number | null => {
+  if (!lookupName) {
+    return null;
+  }
+
+  const lookupKey = normalizeNameLookupKey(lookupName);
+  return candidates.find((candidate) => normalizeNameLookupKey(candidate.text) === lookupKey)?.confidence ?? null;
+};
+
+const updateDebugParsedResultDisplay = (
+  preferredParsed: { result: OCRResult | null; debug: ParserDebug },
+  secondaryParsed: { result: OCRResult | null; debug: ParserDebug },
+  seatAudioResult: SeatAudioResult,
+  nameCandidates: NameLookupCandidate[],
+): void => {
+  const preferredName = getSelectedNameCandidate(preferredParsed.result, preferredParsed.debug);
+  const secondaryName = getSelectedNameCandidate(secondaryParsed.result, secondaryParsed.debug);
+  const preferredSeat = getSelectedSeatCandidate(preferredParsed.result, preferredParsed.debug);
+  const secondarySeat = getSelectedSeatCandidate(secondaryParsed.result, secondaryParsed.debug);
+  const displayName = seatAudioResult.lookupName ?? preferredName?.text ?? secondaryName?.text ?? null;
+  const displaySeat = seatAudioResult.resolvedSeat ?? preferredSeat?.text ?? secondarySeat?.text ?? null;
+  const nameConfidence =
+    findNameCandidateConfidence(seatAudioResult.lookupName, nameCandidates) ??
+    preferredName?.confidence ??
+    secondaryName?.confidence;
+  const seatConfidence = preferredSeat?.confidence ?? secondarySeat?.confidence;
+  const combinedConfidence =
+    nameConfidence !== undefined && nameConfidence !== null && seatConfidence !== undefined
+      ? Math.min(nameConfidence, seatConfidence)
+      : undefined;
+
+  resultNameElement.innerHTML = `<strong>Name:</strong> ${displayName ?? "-"}`;
+  resultSeatElement.innerHTML = `<strong>Seat:</strong> ${displaySeat ?? "-"}`;
+  resultConfidenceElement.innerHTML = `<strong>Confidence:</strong> name ${
+    nameConfidence !== undefined && nameConfidence !== null ? nameConfidence.toFixed(2) : "-"
+  }, seat ${seatConfidence !== undefined ? seatConfidence.toFixed(2) : "-"}, combined ${
+    combinedConfidence !== undefined ? combinedConfidence.toFixed(2) : "-"
+  }`;
 };
 
 const scheduleContinuousScan = (): void => {
@@ -1218,6 +1339,13 @@ const setContinuousScanEnabled = (enabled: boolean): void => {
   continuousScanEnabled = true;
   clearContinuousScanTimer();
   lastContinuousAudioSeat = null;
+    if (isDebugRoute) {
+      debugContinuousLatencyTotalMs = 0;
+      debugContinuousLatencyCount = 0;
+      debugMatchedContinuousLatencyTotalMs = 0;
+      debugMatchedContinuousLatencyCount = 0;
+      updateLatencyDisplay(null, null, null);
+    }
   setCameraMessage("Continuous scan active. Capturing one frame every second.");
   updateActionAvailability();
   void captureAndSendOCR({ initiatedByContinuousScan: true });
@@ -1270,30 +1398,51 @@ const captureAndSendDebugCompare = async (
     const response = await fetchDebugCompareData(blob);
     const currentComplete = response.comparison?.current_bottom_left_det_rec_is_complete ?? false;
     const detectedComplete = response.comparison?.detect_crop_rec_is_complete ?? false;
-    const selectedDebugItems =
+    const preferredDebugItems =
       response.comparison?.higher_scored_path === "current_bottom_left_det_rec"
         ? response.results?.current_bottom_left_det_rec ?? []
         : response.results?.detect_crop_rec ?? [];
-    const { result: parsed, debug: parserDebug } = parseResultFromOCRItems(selectedDebugItems);
-    const lookupName = getConfidentLookupName(parsed, parserDebug);
-    const seatAudioResult = await resolveSeatAudio(lookupName);
-    const hasConfirmedCsvName = Boolean(lookupName && seatAudioResult.resolvedSeat);
+    const secondaryDebugItems =
+      response.comparison?.higher_scored_path === "current_bottom_left_det_rec"
+        ? response.results?.detect_crop_rec ?? []
+        : response.results?.current_bottom_left_det_rec ?? [];
+    const preferredParsed = parseResultFromOCRItems(preferredDebugItems);
+    const secondaryParsed = parseResultFromOCRItems(secondaryDebugItems);
+    const nameCandidates = [
+      ...getNameLookupCandidates(preferredParsed.result, preferredParsed.debug),
+      ...getNameLookupCandidates(secondaryParsed.result, secondaryParsed.debug),
+    ];
+    const seatAudioResult = await resolveSeatAudioFromNameCandidates(nameCandidates);
+    const hasConfirmedCsvName = Boolean(seatAudioResult.lookupName && seatAudioResult.resolvedSeat);
+    const latencyMs = response.profiling?.total_ms;
+    if (initiatedByContinuousScan && typeof latencyMs === "number") {
+      debugContinuousLatencyTotalMs += latencyMs;
+      debugContinuousLatencyCount += 1;
+      if (hasConfirmedCsvName) {
+        debugMatchedContinuousLatencyTotalMs += latencyMs;
+        debugMatchedContinuousLatencyCount += 1;
+      }
+    }
+    const averageLatencyMs =
+      debugContinuousLatencyCount > 0 ? debugContinuousLatencyTotalMs / debugContinuousLatencyCount : null;
+    const matchedAverageLatencyMs =
+      debugMatchedContinuousLatencyCount > 0
+        ? debugMatchedContinuousLatencyTotalMs / debugMatchedContinuousLatencyCount
+        : null;
 
     scanController.setState(hasConfirmedCsvName || currentComplete || detectedComplete ? "Recognized" : "RetryNeeded");
     updateDebugCompareDisplay(response);
-    if (hasConfirmedCsvName) {
-      setConfirmedOperatorResult(lookupName, seatAudioResult);
+    updateDebugParsedResultDisplay(preferredParsed, secondaryParsed, seatAudioResult, nameCandidates);
+    updateLatencyDisplay(latencyMs, averageLatencyMs, matchedAverageLatencyMs);
+    if (hasConfirmedCsvName && seatAudioResult.lookupName) {
+      setConfirmedOperatorResult(seatAudioResult.lookupName, seatAudioResult);
       await playResolvedLegacyAudio(seatAudioResult);
     } else {
       setConfirmedOperatorResult(null, null);
       updateSeatAudioDisplay(seatAudioResult);
     }
     setSampleStatus("completed debug comparison");
-    setCameraMessage(
-      `Debug comparison complete. Faster: ${formatDebugStrategyLabel(
-        response.comparison?.faster_path
-      )}. Higher score: ${formatDebugStrategyLabel(response.comparison?.higher_scored_path)}.`
-    );
+    setCameraMessage("Debug comparison complete.");
   } catch (error) {
     scanController.setState("RetryNeeded");
     updateDiagnosticsDisplay(null, null);
@@ -1361,37 +1510,21 @@ const captureAndSendOCR = async (
   }
 
   try {
-    const response = await fetchOCRData(blob);
+    const response = await fetchOCRData(blob, initiatedByContinuousScan ? "fast" : "accurate");
     const items = Array.isArray(response.results) ? response.results : [];
     const { result: parsed, debug: parserDebug } = parseResultFromOCRItems(items);
-    const lookupName = getConfidentLookupName(parsed, parserDebug);
-    const seatAudioResult = lookupName
-      ? await resolveSeatAudio(lookupName)
-      : {
-          lookupName: null,
-          resolvedSeat: null,
-          sourceUrl: null,
-          status: "skipped" as const,
-          message: "skipped (no parsed name)",
-        };
-    const hasConfirmedCsvName = Boolean(lookupName && seatAudioResult.resolvedSeat);
-    let displayedSeatAudioResult = seatAudioResult;
-
-    if (hasConfirmedCsvName && lookupName) {
-      setConfirmedOperatorResult(lookupName, seatAudioResult);
-      if (
-        initiatedByContinuousScan &&
-        seatAudioResult.resolvedSeat &&
-        seatAudioResult.resolvedSeat !== lastContinuousAudioSeat
-      ) {
-        displayedSeatAudioResult = await playResolvedLegacyAudio(seatAudioResult);
+    const seatAudioResult = await resolveSeatAudioFromNameCandidates(getNameLookupCandidates(parsed, parserDebug));
+    const hasConfirmedCsvName = Boolean(seatAudioResult.lookupName && seatAudioResult.resolvedSeat);
+    if (hasConfirmedCsvName && seatAudioResult.lookupName) {
+      setConfirmedOperatorResult(seatAudioResult.lookupName, seatAudioResult);
+      if (initiatedByContinuousScan && seatAudioResult.resolvedSeat) {
         lastContinuousAudioSeat = seatAudioResult.resolvedSeat;
       } else if (!initiatedByContinuousScan) {
         lastContinuousAudioSeat = null;
       }
     } else {
-      setConfirmedOperatorResult(null, null);
       if (!initiatedByContinuousScan) {
+        setConfirmedOperatorResult(null, null);
         lastContinuousAudioSeat = null;
       }
     }
@@ -1399,7 +1532,9 @@ const captureAndSendOCR = async (
     scanController.setState(hasConfirmedCsvName ? "Recognized" : "RetryNeeded");
 
     updateOCRDisplay(items, parsed, parserDebug);
-    updateSeatAudioDisplay(displayedSeatAudioResult);
+    if (hasConfirmedCsvName || !initiatedByContinuousScan) {
+      updateSeatAudioDisplay(seatAudioResult);
+    }
     updateDiagnosticsDisplay(response, parserDebug);
     setSampleStatus(`completed (${items.length} OCR lines)`);
     if (isDebugRoute) {
@@ -1555,6 +1690,7 @@ updateSeatAudioDisplay({
   status: "idle",
   message: "idle",
 });
+updateLatencyDisplay(null, null, null);
 updateScanModeStatus();
 void updateCameraControlsState();
 void refreshRuntimeStatus();
