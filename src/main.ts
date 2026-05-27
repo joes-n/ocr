@@ -21,6 +21,7 @@ const isChrome = /Chrome/.test(navigator.userAgent) && !/Edg|OPR/.test(navigator
 const hasCameraApi = Boolean(navigator.mediaDevices?.getUserMedia);
 const scanController = new ScanController("Ready");
 const isDebugRoute = window.location.pathname.replace(/\/$/, "") === "/debug";
+const autoStartContinuousScan = !isDebugRoute;
 const debugCompareBackendUrl = "/debug/compare";
 
 let latestOCRResult: OCRResult | null = null;
@@ -1471,8 +1472,12 @@ const startPreview = async (): Promise<void> => {
 
     scanController.setState("Scanning");
     setSampleStatus("idle");
-    setCameraMessage(isDebugRoute ? "Camera preview active. Use one-click capture or start continuous scan." : "Camera ready.");
-    updateActionAvailability();
+    if (autoStartContinuousScan) {
+      setContinuousScanEnabled(true);
+    } else {
+      setCameraMessage("Camera preview active. Use one-click capture or start continuous scan.");
+      updateActionAvailability();
+    }
   } catch (error) {
     setSampleStatus("idle");
     scanController.setState("RetryNeeded");
