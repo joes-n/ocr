@@ -570,7 +570,7 @@ const resolveSeatAudio = async (lookupName: string | null): Promise<SeatAudioRes
 
 const playSeatAudioSource = async (
   audioResult: SeatAudioResult | null,
-  variant: Exclude<SeatAudioVariant, "legacy">,
+  variant: SeatAudioVariant,
 ): Promise<SeatAudioResult> => {
   if (!audioResult?.resolvedSeat) {
     stopSeatAudioPlayback();
@@ -627,6 +627,18 @@ const playConfirmedSeatAudio = async (variant: Exclude<SeatAudioVariant, "legacy
   if (!isDebugRoute && playbackResult.status !== "skipped") {
     setCameraMessage(playbackResult.message);
   }
+};
+
+const playResolvedLegacyAudio = async (audioResult: SeatAudioResult): Promise<SeatAudioResult> => {
+  const playbackResult = await playSeatAudioSource(audioResult, "legacy");
+  updateSeatAudioDisplay(playbackResult);
+  return playbackResult;
+};
+
+const getConfidentLookupName = (parsed: OCRResult | null, parserDebug: ParserDebug): string | null => {
+  const name = parsed?.holderName.trim() || parserDebug.selectedName?.text.trim() || null;
+  const confidence = parsed?.confidence.name ?? parserDebug.selectedName?.confidence ?? 0;
+  return name && confidence >= appConfig.confidenceThresholdName ? name : null;
 };
 
 const updateDiagnosticsDisplay = (response: OCRResponse | null, parserDebug: ParserDebug | null): void => {
@@ -1258,8 +1270,24 @@ const captureAndSendDebugCompare = async (
     const response = await fetchDebugCompareData(blob);
     const currentComplete = response.comparison?.current_bottom_left_det_rec_is_complete ?? false;
     const detectedComplete = response.comparison?.detect_crop_rec_is_complete ?? false;
-    scanController.setState(currentComplete || detectedComplete ? "Recognized" : "RetryNeeded");
+    const selectedDebugItems =
+      response.comparison?.higher_scored_path === "current_bottom_left_det_rec"
+        ? response.results?.current_bottom_left_det_rec ?? []
+        : response.results?.detect_crop_rec ?? [];
+    const { result: parsed, debug: parserDebug } = parseResultFromOCRItems(selectedDebugItems);
+    const lookupName = getConfidentLookupName(parsed, parserDebug);
+    const seatAudioResult = await resolveSeatAudio(lookupName);
+    const hasConfirmedCsvName = Boolean(lookupName && seatAudioResult.resolvedSeat);
+
+    scanController.setState(hasConfirmedCsvName || currentComplete || detectedComplete ? "Recognized" : "RetryNeeded");
     updateDebugCompareDisplay(response);
+    if (hasConfirmedCsvName) {
+      setConfirmedOperatorResult(lookupName, seatAudioResult);
+      await playResolvedLegacyAudio(seatAudioResult);
+    } else {
+      setConfirmedOperatorResult(null, null);
+      updateSeatAudioDisplay(seatAudioResult);
+    }
     setSampleStatus("completed debug comparison");
     setCameraMessage(
       `Debug comparison complete. Faster: ${formatDebugStrategyLabel(
@@ -1327,44 +1355,51 @@ const captureAndSendOCR = async (
   isOCRInFlight = true;
   updateActionAvailability();
   setSampleStatus("sending");
-  setConfirmedOperatorResult(null, null);
-  stopSeatAudioPlayback();
+  if (!initiatedByContinuousScan) {
+    setConfirmedOperatorResult(null, null);
+    stopSeatAudioPlayback();
+  }
 
   try {
     const response = await fetchOCRData(blob);
     const items = Array.isArray(response.results) ? response.results : [];
     const { result: parsed, debug: parserDebug } = parseResultFromOCRItems(items);
-    const passName = parsed ? parsed.confidence.name >= appConfig.confidenceThresholdName : false;
-    const passSeat = parsed ? parsed.confidence.seat >= appConfig.confidenceThresholdSeat : false;
-    const passesConfidence = Boolean(parsed && passName && passSeat);
-    const lookupName = passesConfidence && parsed ? parsed.holderName.trim() : null;
-    const seatAudioResult = await resolveSeatAudio(lookupName);
-    const hasConfirmedCsvName = Boolean(passesConfidence && parsed && seatAudioResult.resolvedSeat);
+    const lookupName = getConfidentLookupName(parsed, parserDebug);
+    const seatAudioResult = lookupName
+      ? await resolveSeatAudio(lookupName)
+      : {
+          lookupName: null,
+          resolvedSeat: null,
+          sourceUrl: null,
+          status: "skipped" as const,
+          message: "skipped (no parsed name)",
+        };
+    const hasConfirmedCsvName = Boolean(lookupName && seatAudioResult.resolvedSeat);
+    let displayedSeatAudioResult = seatAudioResult;
 
-    if (hasConfirmedCsvName && parsed) {
-      setConfirmedOperatorResult(parsed.holderName, seatAudioResult);
-      if (initiatedByContinuousScan && seatAudioResult.resolvedSeat) {
+    if (hasConfirmedCsvName && lookupName) {
+      setConfirmedOperatorResult(lookupName, seatAudioResult);
+      if (
+        initiatedByContinuousScan &&
+        seatAudioResult.resolvedSeat &&
+        seatAudioResult.resolvedSeat !== lastContinuousAudioSeat
+      ) {
+        displayedSeatAudioResult = await playResolvedLegacyAudio(seatAudioResult);
         lastContinuousAudioSeat = seatAudioResult.resolvedSeat;
       } else if (!initiatedByContinuousScan) {
         lastContinuousAudioSeat = null;
       }
     } else {
       setConfirmedOperatorResult(null, null);
-      lastContinuousAudioSeat = null;
+      if (!initiatedByContinuousScan) {
+        lastContinuousAudioSeat = null;
+      }
     }
 
-    if (parsed) {
-      if (passesConfidence && seatAudioResult.resolvedSeat) {
-        scanController.setState("Recognized");
-      } else {
-        scanController.setState("RetryNeeded");
-      }
-    } else {
-      scanController.setState("Scanning");
-    }
+    scanController.setState(hasConfirmedCsvName ? "Recognized" : "RetryNeeded");
 
     updateOCRDisplay(items, parsed, parserDebug);
-    updateSeatAudioDisplay(seatAudioResult);
+    updateSeatAudioDisplay(displayedSeatAudioResult);
     updateDiagnosticsDisplay(response, parserDebug);
     setSampleStatus(`completed (${items.length} OCR lines)`);
     if (isDebugRoute) {
