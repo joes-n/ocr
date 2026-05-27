@@ -91,12 +91,15 @@ export type AudioResolution = {
   segments: AudioSegment[];
 };
 
+export type SeatAudioVariant = "male" | "female" | "legacy";
+
 export type SeatAudioStatus = "idle" | "ready" | "playing" | "skipped" | "error";
 
 export type SeatAudioResult = {
   lookupName: string | null;
   resolvedSeat: string | null;
   sourceUrl: string | null;
+  variant?: SeatAudioVariant;
   status: SeatAudioStatus;
   message: string;
 };

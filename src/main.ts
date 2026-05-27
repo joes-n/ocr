@@ -8,6 +8,7 @@ import type {
   OCRResult,
   RuntimeStatus,
   SeatAudioResult,
+  SeatAudioVariant,
 } from "./types";
 
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -89,6 +90,10 @@ const renderDebugApp = (): string => `
         <p id="result-confidence"><strong>Confidence:</strong> -</p>
         <p id="audio-seat"><strong>CSV seat:</strong> -</p>
         <p id="audio-status"><strong>Seat audio:</strong> idle</p>
+        <div class="audio-controls">
+          <button id="male-audio-btn" type="button" disabled>Male Audio</button>
+          <button id="female-audio-btn" type="button" disabled>Female Audio</button>
+        </div>
       </div>
 
       <div class="result-panel">
@@ -220,6 +225,8 @@ if (
   !resultConfidenceElement ||
   !audioSeatElement ||
   !audioStatusElement ||
+  !maleAudioButton ||
+  !femaleAudioButton ||
   !ocrCountElement ||
   !ocrRawElement ||
   !backendPathElement ||
@@ -430,7 +437,85 @@ const ensureNameSeatDirectory = async (): Promise<Map<string, string>> => {
   return nameSeatDirectoryPromise;
 };
 
-const buildSeatAudioUrl = (seatNumber: string): string => `/audio/${encodeURIComponent(seatNumber)}.wav`;
+type SeatAudioCandidate = {
+  fileName: string;
+  isFallback: boolean;
+  sourceUrl: string;
+};
+
+const getSeatAudioFileName = (seatNumber: string, variant: SeatAudioVariant): string => {
+  if (variant === "male") {
+    return `${seatNumber}_M.wav`;
+  }
+
+  if (variant === "female") {
+    return `${seatNumber}_F.wav`;
+  }
+
+  return `${seatNumber}.wav`;
+};
+
+const buildSeatAudioUrl = (fileName: string): string => `/audio/${encodeURIComponent(fileName)}`;
+
+const buildSeatAudioCandidates = (seatNumber: string, variant: SeatAudioVariant): SeatAudioCandidate[] => {
+  const legacyFileName = getSeatAudioFileName(seatNumber, "legacy");
+  const legacyCandidate = {
+    fileName: legacyFileName,
+    isFallback: variant !== "legacy",
+    sourceUrl: buildSeatAudioUrl(legacyFileName),
+  };
+
+  if (variant === "legacy") {
+    return [legacyCandidate];
+  }
+
+  const variantFileName = getSeatAudioFileName(seatNumber, variant);
+  return [
+    {
+      fileName: variantFileName,
+      isFallback: false,
+      sourceUrl: buildSeatAudioUrl(variantFileName),
+    },
+    legacyCandidate,
+  ];
+};
+
+const playAudioCandidate = async (candidate: SeatAudioCandidate): Promise<HTMLAudioElement> => {
+  const audio = new Audio(candidate.sourceUrl);
+  audio.playbackRate = appConfig.audioPlaybackRate;
+  audio.preload = "auto";
+
+  stopSeatAudioPlayback();
+  activeSeatAudio = audio;
+
+  try {
+    await audio.play();
+    audio.addEventListener(
+      "ended",
+      () => {
+        if (activeSeatAudio === audio) {
+          activeSeatAudio = null;
+        }
+      },
+      { once: true },
+    );
+  } catch (error) {
+    if (activeSeatAudio === audio) {
+      activeSeatAudio = null;
+    }
+    throw error;
+  }
+
+  return audio;
+};
+
+const formatAudioCandidateList = (candidates: SeatAudioCandidate[]): string => {
+  if (candidates.length === 1) {
+    return candidates[0].fileName;
+  }
+
+  return `${candidates[0].fileName} or fallback ${candidates[1].fileName}`;
+};
 
 const resolveSeatAudio = async (lookupName: string | null): Promise<SeatAudioResult> => {
   if (!lookupName) {
@@ -471,77 +556,72 @@ const resolveSeatAudio = async (lookupName: string | null): Promise<SeatAudioRes
     };
   }
 
-  const sourceUrl = buildSeatAudioUrl(resolvedSeat);
+  const legacyFileName = getSeatAudioFileName(resolvedSeat, "legacy");
   return {
     lookupName,
     resolvedSeat,
-    sourceUrl,
+    sourceUrl: buildSeatAudioUrl(legacyFileName),
+    variant: "legacy",
     status: "ready",
-    message: `ready (${resolvedSeat}.wav)`,
+    message: `ready (${legacyFileName})`,
   };
 };
 
-const playSeatAudioSource = async (audioResult: SeatAudioResult | null, label: string): Promise<SeatAudioResult> => {
-  if (!audioResult?.sourceUrl || !audioResult.resolvedSeat) {
+const playSeatAudioSource = async (
+  audioResult: SeatAudioResult | null,
+  variant: Exclude<SeatAudioVariant, "legacy">,
+): Promise<SeatAudioResult> => {
+  if (!audioResult?.resolvedSeat) {
     stopSeatAudioPlayback();
     return {
       lookupName: audioResult?.lookupName ?? null,
       resolvedSeat: audioResult?.resolvedSeat ?? null,
       sourceUrl: audioResult?.sourceUrl ?? null,
+      variant,
       status: "skipped",
-      message: `skipped (${label} audio unavailable)`,
+      message: `skipped (${variant} audio unavailable)`,
     };
   }
 
-  const audio = new Audio(audioResult.sourceUrl);
-  audio.playbackRate = appConfig.audioPlaybackRate;
-  audio.preload = "auto";
+  const candidates = buildSeatAudioCandidates(audioResult.resolvedSeat, variant);
+  let lastError: unknown = null;
 
-  stopSeatAudioPlayback();
-  activeSeatAudio = audio;
-
-  try {
-    await audio.play();
-    audio.addEventListener(
-      "ended",
-      () => {
-        if (activeSeatAudio === audio) {
-          activeSeatAudio = null;
-        }
-      },
-      { once: true },
-    );
-
-    return {
-      lookupName: audioResult.lookupName,
-      resolvedSeat: audioResult.resolvedSeat,
-      sourceUrl: audioResult.sourceUrl,
-      status: "playing",
-      message: `playing ${audioResult.resolvedSeat}.wav (${label})`,
-    };
-  } catch (error) {
-    if (activeSeatAudio === audio) {
-      activeSeatAudio = null;
+  for (const candidate of candidates) {
+    try {
+      await playAudioCandidate(candidate);
+      return {
+        lookupName: audioResult.lookupName,
+        resolvedSeat: audioResult.resolvedSeat,
+        sourceUrl: candidate.sourceUrl,
+        variant,
+        status: "playing",
+        message: candidate.isFallback ? `playing fallback ${candidate.fileName}` : `playing ${candidate.fileName}`,
+      };
+    } catch (error) {
+      lastError = error;
     }
-
-    const packagedSetupMessage = getPackagedNamesCsvSetupMessage();
-    const message = packagedSetupMessage
-      ? `unable to play ${audioResult.resolvedSeat}.wav; add it under ${latestRuntimeStatus?.audio_assets_dir}`
-      : error instanceof Error
-        ? error.message
-        : "Audio playback failed";
-    return {
-      lookupName: audioResult.lookupName,
-      resolvedSeat: audioResult.resolvedSeat,
-      sourceUrl: audioResult.sourceUrl,
-      status: "error",
-      message: `error (${withPackagedAssetHint(message)})`,
-    };
   }
+
+  const packagedSetupMessage = getPackagedNamesCsvSetupMessage();
+  const candidateList = formatAudioCandidateList(candidates);
+  const message = packagedSetupMessage
+    ? `unable to play ${candidateList}; add it under ${latestRuntimeStatus?.audio_assets_dir}`
+    : lastError instanceof Error
+      ? `unable to play ${candidateList}; ${lastError.message}`
+      : `unable to play ${candidateList}`;
+
+  return {
+    lookupName: audioResult.lookupName,
+    resolvedSeat: audioResult.resolvedSeat,
+    sourceUrl: candidates[0]?.sourceUrl ?? null,
+    variant,
+    status: "error",
+    message: `error (${withPackagedAssetHint(message)})`,
+  };
 };
 
-const playConfirmedSeatAudio = async (label: string): Promise<void> => {
-  const playbackResult = await playSeatAudioSource(latestConfirmedAudioResult, label);
+const playConfirmedSeatAudio = async (variant: Exclude<SeatAudioVariant, "legacy">): Promise<void> => {
+  const playbackResult = await playSeatAudioSource(latestConfirmedAudioResult, variant);
   updateSeatAudioDisplay(playbackResult);
   if (!isDebugRoute && playbackResult.status !== "skipped") {
     setCameraMessage(playbackResult.message);

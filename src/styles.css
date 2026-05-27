@@ -158,6 +158,12 @@ p {
   flex-wrap: wrap;
 }
 
+.audio-controls {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
 .camera-controls {
   display: flex;
   gap: 0.5rem;
