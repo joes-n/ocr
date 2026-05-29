@@ -1,3 +1,31 @@
+# OCR Ticket Reader 0.6.0
+
+Release date: 2026-05-29
+
+## Highlights
+
+- Added visible missing setup warnings on the compact operator screen when `names.csv` or seat WAV files are not available.
+- Added packaged runtime checks for both `names.csv` and audio assets in developer and packaged modes.
+- Fixed browser cache reuse after installing a new Windows build by opening the app with a cache-busting launch URL and serving frontend assets with no-store cache headers.
+- Updated Windows packaging to detect Inno Setup 7 and generate the installer automatically.
+- Improved packaging cleanup so repeated Windows rebuilds tolerate an existing generated bundle directory.
+- Bumped package and installer metadata to version `0.6.0`.
+
+## Windows Artifact
+
+- Installer: `ocr-ticket-reader-setup.exe`
+- GitHub release: `https://github.com/joes-n/ocr/releases/tag/v0.6.0`
+- SHA256: `ecf382f4e02e3656cdf9709b84618591b2bd5388f5c70db65d555ed55db52158`
+- Install location: `%LOCALAPPDATA%\Programs\OCRTicketReader`
+- Editable setup assets: `%LOCALAPPDATA%\OCRTicketReader\assets\names.csv` and `%LOCALAPPDATA%\OCRTicketReader\assets\audio`
+
+## Notes
+
+- Close any already-open OCR Ticket Reader browser tab before launching the newly installed app.
+- If `names.csv` or seat WAV files are missing, the operator screen now keeps the warning visible alongside scan results.
+- First launch can take longer while PaddleOCR models initialize or download.
+- Camera capture is still intended for desktop Chrome.
+
 # OCR Ticket Reader 0.5.0
 
 Release date: 2026-05-28
