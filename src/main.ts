@@ -316,8 +316,26 @@ const setAppState = (stateLabel: string): void => {
   appStateElement.innerHTML = `<strong>App state:</strong> ${stateLabel}`;
 };
 
+function getVisibleSeatAssetWarningMessage(): string | null {
+  if (!latestRuntimeStatus) {
+    return null;
+  }
+
+  const messages: string[] = [];
+  if (!latestRuntimeStatus.names_csv_present) {
+    messages.push(`Add names.csv at ${latestRuntimeStatus.names_csv_path}.`);
+  }
+
+  if (!latestRuntimeStatus.audio_assets_present) {
+    messages.push(`Put seat WAV files under ${latestRuntimeStatus.audio_assets_dir}.`);
+  }
+
+  return messages.length > 0 ? `Missing setup files: ${messages.join(" ")}` : null;
+}
+
 const setCameraMessage = (message: string): void => {
-  cameraMessageElement.textContent = message;
+  const assetWarning = getVisibleSeatAssetWarningMessage();
+  cameraMessageElement.textContent = assetWarning ? `${message} ${assetWarning}` : message;
 };
 
 const setSampleStatus = (message: string): void => {
@@ -393,6 +411,24 @@ const getPackagedNamesCsvSetupMessage = (): string | null => {
   }
 
   return `add names.csv at ${latestRuntimeStatus.names_csv_path} and seat WAV files under ${latestRuntimeStatus.audio_assets_dir}`;
+};
+
+const getSeatAssetSetupMessages = (status: RuntimeStatus): string[] => {
+  const messages: string[] = [];
+  if (!status.names_csv_present) {
+    messages.push(`Add names.csv at ${status.names_csv_path}.`);
+  }
+
+  if (!status.audio_assets_present) {
+    messages.push(`Put seat WAV files under ${status.audio_assets_dir}.`);
+  }
+
+  return messages;
+};
+
+const getSeatAssetSetupMessage = (status: RuntimeStatus): string | null => {
+  const messages = getSeatAssetSetupMessages(status);
+  return messages.length > 0 ? messages.join(" ") : null;
 };
 
 const stopSeatAudioPlayback = (): void => {
@@ -843,8 +879,9 @@ const updateRuntimeDisplay = (status: RuntimeStatus | null): void => {
     runtimeMessage = `${status.message} Model cache directory: ${status.model_cache_dir}.`;
   }
 
-  if (status.packaged && !status.names_csv_present) {
-    runtimeMessage = `${runtimeMessage} Add names.csv at ${status.names_csv_path}. Put seat WAV files under ${status.audio_assets_dir}.`;
+  const seatAssetSetupMessage = getSeatAssetSetupMessage(status);
+  if (seatAssetSetupMessage) {
+    runtimeMessage = `${runtimeMessage} ${seatAssetSetupMessage}`;
   }
 
   runtimeMessageElement.textContent = runtimeMessage;
@@ -855,22 +892,38 @@ const syncRuntimeStatus = (status: RuntimeStatus): void => {
   latestRuntimeStatus = status;
   updateRuntimeDisplay(status);
 
+  const visibleSeatAssetWarning = getVisibleSeatAssetWarningMessage();
+  if (visibleSeatAssetWarning && !cameraStream) {
+    setCameraMessage(visibleSeatAssetWarning);
+  }
+
   if (status.is_ready) {
     if (!isDebugRoute && !operatorAutoStartAttempted && !cameraStream) {
       operatorAutoStartAttempted = true;
       void startPreview();
     }
 
-    if (status.packaged && !status.names_csv_present) {
+    const seatAssetSetupMessage = getSeatAssetSetupMessage(status);
+    if (!status.names_csv_present) {
       nameSeatDirectoryPromise = null;
       updateSeatAudioDisplay({
         lookupName: null,
         resolvedSeat: null,
         sourceUrl: null,
         status: "error",
-        message: `error (${getPackagedNamesCsvSetupMessage() ?? "unable to preload names.csv"})`,
+        message: `error (${seatAssetSetupMessage ?? "unable to preload names.csv"})`,
       });
       return;
+    }
+
+    if (!status.audio_assets_present && !latestConfirmedAudioResult && !activeSeatAudio) {
+      updateSeatAudioDisplay({
+        lookupName: null,
+        resolvedSeat: null,
+        sourceUrl: null,
+        status: "error",
+        message: `warning (${seatAssetSetupMessage ?? `put seat WAV files under ${status.audio_assets_dir}`})`,
+      });
     }
 
     void ensureNameSeatDirectory().catch(() => {

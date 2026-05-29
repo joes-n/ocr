@@ -958,11 +958,22 @@ def _dist_file(relative_path: str) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
+FRONTEND_CACHE_HEADERS = {
+    "Cache-Control": "no-store, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+
+def _dist_file_response(file_path: Path) -> FileResponse:
+    return FileResponse(file_path, headers=FRONTEND_CACHE_HEADERS)
+
+
 def _dist_index_response() -> FileResponse:
     index_file = _dist_file("index.html")
     if index_file is None:
         raise HTTPException(status_code=404, detail="Frontend build not found. Run `npm run build` first.")
-    return FileResponse(index_file)
+    return _dist_file_response(index_file)
 
 
 def _request_is_localhost(request: Request) -> bool:
@@ -1649,7 +1660,7 @@ async def serve_frontend(asset_path: str):
 
     asset_file = _dist_file(asset_path)
     if asset_file is not None:
-        return FileResponse(asset_file)
+        return _dist_file_response(asset_file)
 
     return _dist_index_response()
 

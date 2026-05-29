@@ -1,3 +1,33 @@
+# OCR Ticket Reader 0.5.0
+
+Release date: 2026-05-28
+
+## Highlights
+
+- Added automatic continuous scanning on the main operator screen.
+- Split OCR requests into `fast` and `accurate` modes: continuous scan uses the faster lower-left ROI path, while manual reads keep the fallback-capable accurate path.
+- Improved name matching by checking multiple OCR name candidates against `names.csv`, instead of relying only on the single parsed holder name.
+- Added Male/Female seat audio controls. The app now prefers `audio/<Seat No>_M.wav` or `audio/<Seat No>_F.wav` and falls back to the legacy `audio/<Seat No>.wav`.
+- Added scan latency reporting, including continuous-scan averages and matched-scan averages.
+- Updated the debug comparison flow to resolve CSV matches, show parsed results, track latency, and autoplay legacy seat audio when a match is found.
+
+## Windows Artifact
+
+- Release ZIP: `bundle.zip`
+- GitHub release: `https://github.com/joes-n/ocr/releases/tag/v0.5.0`
+- SHA256: `7c6af8a9a6bcb2e142f706276c97decaac6adfc6043a4f05a9222c7ddebebf3d`
+- Runnable bundle entry point: `ocr-ticket-reader.exe`
+- Backend bundle: `ocr-backend`
+
+The Inno Setup installer is not included in this build because Inno Setup 6 was not installed on the packaging machine. The PyInstaller bundle was rebuilt successfully and uploaded as `bundle.zip`.
+
+## Notes
+
+- Camera capture is still intended for desktop Chrome.
+- First launch can take longer while PaddleOCR models initialize or download.
+- For gendered seat audio, place WAV files under `audio/` using `<Seat No>_M.wav` and `<Seat No>_F.wav`; missing gendered files fall back to `<Seat No>.wav`.
+- `POST /ocr` accepts `mode=fast` for continuous scans and `mode=accurate` for manual fallback-capable reads.
+
 # OCR Ticket Reader 0.1.0
 
 Release date: 2026-05-12

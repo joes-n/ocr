@@ -14,7 +14,6 @@ import webbrowser
 APP_NAME = "OCR Ticket Reader"
 DEFAULT_HOST = os.environ.get("OCR_APP_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.environ.get("OCR_APP_PORT", "38451"))
-APP_URL = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}/"
 HEALTH_URL = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}/healthz"
 STARTUP_TIMEOUT_SECONDS = int(os.environ.get("OCR_STARTUP_TIMEOUT_SECONDS", "180"))
 MUTEX_NAME = "Local\\OCRTicketReaderLauncher"
@@ -108,7 +107,8 @@ def _wait_for_health(timeout_seconds: int) -> bool:
 
 
 def _open_browser() -> None:
-    webbrowser.open(APP_URL, new=1, autoraise=True)
+    app_url = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}/?v={int(time.time())}"
+    webbrowser.open(app_url, new=1, autoraise=True)
 
 
 def _backend_command() -> tuple[list[str], Path]:

@@ -26,9 +26,17 @@ if ([string]::IsNullOrWhiteSpace($PythonExe)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($InnoSetupCompiler)) {
-    $DefaultIscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-    if (Test-Path $DefaultIscc) {
-        $InnoSetupCompiler = $DefaultIscc
+    $InnoSetupCandidates = @(
+        "$env:ProgramFiles\Inno Setup 7\ISCC.exe",
+        "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
+        "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+        "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+    )
+    foreach ($Candidate in $InnoSetupCandidates) {
+        if (Test-Path $Candidate) {
+            $InnoSetupCompiler = $Candidate
+            break
+        }
     }
 }
 
@@ -42,9 +50,9 @@ try {
     Remove-Item $PyInstallerDist -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item $PyInstallerWork -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item $BundleRoot -Recurse -Force -ErrorAction SilentlyContinue
-    New-Item -ItemType Directory -Path $PyInstallerDist | Out-Null
-    New-Item -ItemType Directory -Path $PyInstallerWork | Out-Null
-    New-Item -ItemType Directory -Path $BundleRoot | Out-Null
+    New-Item -ItemType Directory -Path $PyInstallerDist -Force | Out-Null
+    New-Item -ItemType Directory -Path $PyInstallerWork -Force | Out-Null
+    New-Item -ItemType Directory -Path $BundleRoot -Force | Out-Null
     New-Item -ItemType Directory -Path $InstallerRoot -Force | Out-Null
 
     & $PythonExe -m PyInstaller --noconfirm --clean `

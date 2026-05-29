@@ -15,3 +15,4 @@ specs/
 .specify/
 .codex
 *.log
+RELEASE_NOTES.md
