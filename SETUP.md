@@ -170,6 +170,8 @@ pip install -r backend\requirements.txt
 pip install -r packaging\windows\requirements-packaging.txt
 ```
 
+The CPU `backend\requirements.txt` path remains the default for manual setup and Docker compatibility. The Windows build command below runs `backend\install_runtime.py --runtime auto` before PyInstaller, installing `paddlepaddle-gpu==3.2.2` when an NVIDIA GPU is detected and CPU `paddlepaddle==3.2.2` otherwise.
+
 ### 2) Build the Windows bundle
 
 ```powershell
@@ -177,6 +179,8 @@ cd C:\path\to\proj_ocr
 npm install
 npm run build:windows
 ```
+
+To override runtime detection, run `.\packaging\windows\build.ps1 -PaddleRuntime gpu` or `.\packaging\windows\build.ps1 -PaddleRuntime cpu`. Use `-SkipRuntimeInstall` only when the virtual environment already has the intended Paddle runtime.
 
 The PowerShell build script:
 

@@ -1,6 +1,9 @@
 param(
     [string]$PythonExe = "",
-    [string]$InnoSetupCompiler = ""
+    [string]$InnoSetupCompiler = "",
+    [ValidateSet("auto", "cpu", "gpu")]
+    [string]$PaddleRuntime = "auto",
+    [switch]$SkipRuntimeInstall
 )
 
 $ErrorActionPreference = "Stop"
@@ -45,6 +48,10 @@ Write-Host "Python executable: $PythonExe"
 
 Push-Location $RepoRoot
 try {
+    if (-not $SkipRuntimeInstall) {
+        & $PythonExe "$RepoRoot\backend\install_runtime.py" --runtime $PaddleRuntime
+    }
+
     npm run build
 
     Remove-Item $PyInstallerDist -Recurse -Force -ErrorAction SilentlyContinue

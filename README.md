@@ -176,6 +176,8 @@ pip install -r packaging\windows\requirements-packaging.txt
 npm run build:windows
 ```
 
+`npm run build:windows` runs `backend\install_runtime.py --runtime auto` before PyInstaller. On Windows machines with an NVIDIA GPU, the script installs `paddlepaddle-gpu==3.2.2` from the Paddle CUDA 12.6 package index; otherwise it installs the CPU `paddlepaddle==3.2.2` wheel. To force a runtime, run `.\packaging\windows\build.ps1 -PaddleRuntime gpu` or `.\packaging\windows\build.ps1 -PaddleRuntime cpu`. Use `-SkipRuntimeInstall` only when the virtual environment already has the intended Paddle runtime.
+
 Expected outputs:
 
 - PyInstaller bundle under `release\windows\bundle`
@@ -208,11 +210,17 @@ In packaged mode on Windows, app data defaults to `%LOCALAPPDATA%\OCRTicketReade
 
 `OCR_DEVICE=auto` uses `gpu:0` only when the installed PaddlePaddle package is CUDA-enabled and at least one CUDA device is visible. Otherwise it falls back to CPU. `OCR_DEVICE=gpu:0` is strict and startup fails if CUDA is unavailable. CPU inference keeps MKL-DNN enabled; GPU inference disables MKL-DNN.
 
-`GET /runtime/status` reports `ocr_device_configured`, `ocr_device_resolved`, `paddle_cuda_compiled`, and `paddle_cuda_device_count`.
+`GET /runtime/status` reports `ocr_device_configured`, `ocr_device_resolved`, `paddle_cuda_compiled`, `paddle_cuda_device_count`, and `nvidia_gpu` detection details.
 
 ## NVIDIA GPU Benchmarking
 
-The default `backend/requirements.txt` installs the CPU PaddlePaddle wheel. On an NVIDIA/CUDA machine, replace it with the GPU wheel before using `OCR_DEVICE=gpu:0`.
+The default `backend/requirements.txt` installs the CPU PaddlePaddle wheel for Docker/manual compatibility. On a Windows NVIDIA/CUDA machine, use the runtime installer to select the GPU wheel automatically:
+
+```powershell
+.\backend\.venv\Scripts\python.exe backend\install_runtime.py --runtime auto
+```
+
+For manual GPU setup or troubleshooting:
 
 ```bash
 nvidia-smi

@@ -102,9 +102,11 @@ logger = _configure_logging()
 from paddleocr import PaddleOCR, TextDetection, TextRecognition
 
 try:
+    from .hardware_detection import detect_nvidia_gpu
     from .ocr_device import OCRDeviceResolution, detect_paddle_cuda_status, resolve_ocr_device
     from .ocr_scoring import score_ocr_items
 except ImportError:
+    from hardware_detection import detect_nvidia_gpu
     from ocr_device import OCRDeviceResolution, detect_paddle_cuda_status, resolve_ocr_device
     from ocr_scoring import score_ocr_items
 
@@ -128,11 +130,18 @@ app.add_middleware(
 
 MAX_IMAGE_SIDE = 1920
 OCR_DEVICE_CONFIGURED = os.environ.get("OCR_DEVICE", "auto").strip() or "auto"
+NVIDIA_GPU_STATUS = detect_nvidia_gpu()
 PADDLE_CUDA_STATUS = detect_paddle_cuda_status()
-MOBILE_DETECTION_MODEL = "PP-OCRv5_mobile_det"
-MOBILE_RECOGNITION_MODEL = "PP-OCRv5_mobile_rec"
-FALLBACK_DETECTION_MODEL = "PP-OCRv5_server_det"
-FALLBACK_RECOGNITION_MODEL = "PP-OCRv5_server_rec"
+MOBILE_DETECTION_MODEL = "PP-OCRv6_medium_det"
+MOBILE_RECOGNITION_MODEL = "PP-OCRv6_medium_rec"
+FALLBACK_DETECTION_MODEL = "PP-OCRv6_medium_det"
+FALLBACK_RECOGNITION_MODEL = "PP-OCRv6_medium_rec"
+MOBILE_ENGINE_LABEL = f"{MOBILE_DETECTION_MODEL}+{MOBILE_RECOGNITION_MODEL}"
+FALLBACK_ENGINE_LABEL = f"{FALLBACK_DETECTION_MODEL}+{FALLBACK_RECOGNITION_MODEL}"
+MOBILE_DEBUG_ENGINE_LABEL = (
+    f"{MOBILE_DETECTION_MODEL.replace('_det', '_TextDetection')}"
+    f"+{MOBILE_RECOGNITION_MODEL.replace('_rec', '_TextRecognition')}"
+)
 BOTTOM_ROI_FRACTION = 0.5
 LEFT_ROI_FRACTION = 0.6
 BOTTOM_WIDE_ROI_FRACTION = 0.6
@@ -205,7 +214,11 @@ class OCRRuntimeManager:
         self._device_resolution: OCRDeviceResolution | None = None
         self._device_resolution_error: str | None = None
         try:
-            self._device_resolution = resolve_ocr_device(OCR_DEVICE_CONFIGURED, PADDLE_CUDA_STATUS)
+            self._device_resolution = resolve_ocr_device(
+                OCR_DEVICE_CONFIGURED,
+                PADDLE_CUDA_STATUS,
+                nvidia_gpu_present=NVIDIA_GPU_STATUS.present,
+            )
         except Exception as exc:
             self._device_resolution_error = str(exc)
         self._thread: threading.Thread | None = None
@@ -251,6 +264,11 @@ class OCRRuntimeManager:
                 "paddle_cuda_compiled": PADDLE_CUDA_STATUS.cuda_compiled,
                 "paddle_cuda_device_count": PADDLE_CUDA_STATUS.cuda_device_count,
                 "paddle_cuda_status_error": PADDLE_CUDA_STATUS.error,
+                "nvidia_gpu": NVIDIA_GPU_STATUS.as_status_dict(),
+                "nvidia_gpu_present": NVIDIA_GPU_STATUS.present,
+                "nvidia_gpu_name": NVIDIA_GPU_STATUS.name,
+                "nvidia_gpu_source": NVIDIA_GPU_STATUS.source,
+                "nvidia_gpu_detection_error": NVIDIA_GPU_STATUS.error,
                 "last_state_change_utc": _utc_timestamp(self._last_state_change),
             }
 
@@ -290,7 +308,11 @@ class OCRRuntimeManager:
             if self._device_resolution_error:
                 raise RuntimeError(self._device_resolution_error)
             if self._device_resolution is None:
-                self._device_resolution = resolve_ocr_device(OCR_DEVICE_CONFIGURED, PADDLE_CUDA_STATUS)
+                self._device_resolution = resolve_ocr_device(
+                    OCR_DEVICE_CONFIGURED,
+                    PADDLE_CUDA_STATUS,
+                    nvidia_gpu_present=NVIDIA_GPU_STATUS.present,
+                )
             device_resolution = self._device_resolution
             with self._lock:
                 self._device_resolution = device_resolution
@@ -1061,7 +1083,7 @@ async def process_image(file: UploadFile = File(...), mode: str = "accurate"):
             {
                 "stage": "bottom50_left60_mobile",
                 "engine": ocr_mobile,
-                "engine_label": "PP-OCRv5_mobile_det+PP-OCRv5_mobile_rec",
+                "engine_label": MOBILE_ENGINE_LABEL,
                 "bottom_fraction": BOTTOM_ROI_FRACTION,
                 "left_fraction": LEFT_ROI_FRACTION,
                 "artifact_key": "roi_bottom50_left60",
@@ -1073,7 +1095,7 @@ async def process_image(file: UploadFile = File(...), mode: str = "accurate"):
                 {
                     "stage": "bottom60_fullwidth_mobile",
                     "engine": ocr_mobile,
-                    "engine_label": "PP-OCRv5_mobile_det+PP-OCRv5_mobile_rec",
+                    "engine_label": MOBILE_ENGINE_LABEL,
                     "bottom_fraction": BOTTOM_WIDE_ROI_FRACTION,
                     "left_fraction": FULL_WIDTH_ROI_FRACTION,
                     "artifact_key": "roi_bottom60_fullwidth",
@@ -1187,7 +1209,7 @@ async def process_image(file: UploadFile = File(...), mode: str = "accurate"):
             scored = score_ocr_items(output)
             attempt = {
                 "stage": "bottom50_left60_detect_crop_rec",
-                "engine": "PP-OCRv5_mobile_TextDetection+PP-OCRv5_mobile_TextRecognition",
+                "engine": MOBILE_DEBUG_ENGINE_LABEL,
                 "bbox": primary_candidate["bbox"],
                 "output": output,
                 "ocr_ms": detect_crop_rec_ms,
@@ -1283,7 +1305,7 @@ async def process_image(file: UploadFile = File(...), mode: str = "accurate"):
             fallback_scored = score_ocr_items(fallback_output)
             fallback_attempt = {
                 "stage": "server_full_frame_fallback",
-                "engine": "PP-OCRv5_server_det+PP-OCRv5_server_rec",
+                "engine": FALLBACK_ENGINE_LABEL,
                 "bbox": (0, 0, img.shape[1], img.shape[0]),
                 "output": fallback_output,
                 "ocr_ms": fallback_ocr_ms,
