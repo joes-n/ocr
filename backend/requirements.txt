@@ -1,8 +1,2 @@
-fastapi
-uvicorn
 paddlepaddle==3.2.2
-paddleocr
-python-multipart
-pydantic
-numpy
-opencv-python-headless
+-r requirements-common.txt

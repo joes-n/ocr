@@ -24,6 +24,16 @@ class OCRDeviceResolutionTests(unittest.TestCase):
         self.assertTrue(resolution.enable_mkldnn)
         self.assertIn("not compiled with CUDA", resolution.fallback_reason)
 
+    def test_auto_reports_nvidia_mismatch_when_paddle_is_cpu_only(self) -> None:
+        resolution = resolve_ocr_device(
+            "auto",
+            PaddleCudaStatus(cuda_compiled=False, cuda_device_count=0),
+            nvidia_gpu_present=True,
+        )
+
+        self.assertEqual(resolution.resolved, "cpu")
+        self.assertIn("NVIDIA GPU detected", resolution.fallback_reason)
+
     def test_explicit_cpu_is_strict_cpu(self) -> None:
         resolution = resolve_ocr_device("cpu", PaddleCudaStatus(cuda_compiled=True, cuda_device_count=1))
 

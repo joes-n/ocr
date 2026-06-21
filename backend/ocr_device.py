@@ -68,7 +68,12 @@ def detect_paddle_cuda_status() -> PaddleCudaStatus:
     return PaddleCudaStatus(cuda_compiled=True, cuda_device_count=cuda_device_count)
 
 
-def resolve_ocr_device(configured: str | None, cuda_status: PaddleCudaStatus) -> OCRDeviceResolution:
+def resolve_ocr_device(
+    configured: str | None,
+    cuda_status: PaddleCudaStatus,
+    *,
+    nvidia_gpu_present: bool = False,
+) -> OCRDeviceResolution:
     configured_device = (configured or "auto").strip().lower() or "auto"
 
     if configured_device == "auto":
@@ -88,7 +93,7 @@ def resolve_ocr_device(configured: str | None, cuda_status: PaddleCudaStatus) ->
             strict=False,
             cuda_compiled=cuda_status.cuda_compiled,
             cuda_device_count=cuda_status.cuda_device_count,
-            fallback_reason=_auto_cpu_fallback_reason(cuda_status),
+            fallback_reason=_auto_cpu_fallback_reason(cuda_status, nvidia_gpu_present=nvidia_gpu_present),
             cuda_status_error=cuda_status.error,
         )
 
@@ -131,8 +136,10 @@ def resolve_ocr_device(configured: str | None, cuda_status: PaddleCudaStatus) ->
     raise ValueError("OCR_DEVICE must be one of: auto, cpu, gpu, gpu:<index>.")
 
 
-def _auto_cpu_fallback_reason(cuda_status: PaddleCudaStatus) -> str:
+def _auto_cpu_fallback_reason(cuda_status: PaddleCudaStatus, *, nvidia_gpu_present: bool = False) -> str:
     if not cuda_status.cuda_compiled:
+        if nvidia_gpu_present:
+            return "NVIDIA GPU detected, but installed PaddlePaddle is not compiled with CUDA."
         return "Installed PaddlePaddle is not compiled with CUDA."
     if cuda_status.cuda_device_count is None:
         return "CUDA device count is unavailable."
