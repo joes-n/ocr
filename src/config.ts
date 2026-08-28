@@ -5,6 +5,7 @@ export type AppConfig = {
   retryIntervalMs: number;
   audioPlaybackRate: number;
   ocrBackendUrl: string;
+  qrBackendUrl: string;
 };
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -13,7 +14,8 @@ const DEFAULT_CONFIG: AppConfig = {
   scanTimeoutMs: 100000,
   retryIntervalMs: 100000,
   audioPlaybackRate: 1.0,
-  ocrBackendUrl: "/ocr"
+  ocrBackendUrl: "/ocr",
+  qrBackendUrl: "/qr/decode"
 };
 
 const clamp01 = (value: number): number => {
@@ -52,5 +54,6 @@ export const appConfig: AppConfig = {
   scanTimeoutMs: Math.max(0, parseNumber(import.meta.env.VITE_SCAN_TIMEOUT_MS, DEFAULT_CONFIG.scanTimeoutMs)),
   retryIntervalMs: Math.max(0, parseNumber(import.meta.env.VITE_RETRY_INTERVAL_MS, DEFAULT_CONFIG.retryIntervalMs)),
   audioPlaybackRate: Math.max(0.1, parseNumber(import.meta.env.VITE_AUDIO_PLAYBACK_RATE, DEFAULT_CONFIG.audioPlaybackRate)),
-  ocrBackendUrl: parseUrl(import.meta.env.VITE_OCR_BACKEND_URL, DEFAULT_CONFIG.ocrBackendUrl)
+  ocrBackendUrl: parseUrl(import.meta.env.VITE_OCR_BACKEND_URL, DEFAULT_CONFIG.ocrBackendUrl),
+  qrBackendUrl: parseUrl(import.meta.env.VITE_QR_BACKEND_URL, DEFAULT_CONFIG.qrBackendUrl)
 };

@@ -1,14 +1,15 @@
-# OCR Ticket Reader
+# QR/OCR Ticket Reader
 
-Local OCR app for scanning a ticket from a webcam, sending one captured frame to a local PaddleOCR backend, and extracting a holder name plus seat code.
+Local ticket reader app for scanning a ticket from a webcam. The default operator flow reads a printed Micro QR code containing the seat code, then resolves seat audio from the encoded seat. The original PaddleOCR name/seat reader is still available as a separate OCR reader route.
 
-When the parsed name matches `Name` in `names.csv`, the frontend resolves the seat from the CSV and enables Male/Female audio buttons. The buttons prefer `audio/<Seat No>_M.wav` or `audio/<Seat No>_F.wav` and fall back to `audio/<Seat No>.wav` when the gendered file is not available.
+QR tickets encode only the normalized seat value, such as `10AC13`, and are generated as SVG files. The audio buttons prefer `audio/<Seat No>_M.wav` or `audio/<Seat No>_F.wav` and fall back to `audio/<Seat No>.wav` when the gendered file is not available. In OCR reader mode, the parsed name still resolves through `names.csv` as before.
 
 ## Current Status
 
 - Frontend: Vite + TypeScript app in `src/`
-- Backend: FastAPI + PaddleOCR service in `backend/main.py`
-- Dev mode: Vite serves the UI and proxies `/ocr`, `/runtime`, `/healthz`, and `/shutdown` to `http://127.0.0.1:8000`
+- Backend: FastAPI service in `backend/main.py`
+- QR tooling: generator/decoder helpers in `backend/qr_ticket.py`
+- Dev mode: Vite serves the UI and proxies `/qr`, `/ocr`, `/runtime`, `/healthz`, and `/shutdown` to `http://127.0.0.1:8000`
 - Production-style mode: the backend serves the built frontend from `dist/` and serves `names.csv`/`audio/` from the repo root
 - Browser target: desktop Chrome with camera access
 - Scan modes: one-click capture and continuous 1-second capture
@@ -37,18 +38,38 @@ Example JPEGs are checked in for OCR smoke tests and timing runs: `text_line_*.j
 ## How It Works
 
 1. The browser UI starts a camera preview in desktop Chrome.
-2. The user captures one frame on demand or enables continuous 1-second capture, and each frame is uploaded to `POST /ocr`.
-3. Continuous scan uses `mode=fast`, which runs only the lower-left detect-crop-rec pass before moving to the next frame.
-4. Manual `Read Again` uses `mode=accurate`, which can run the slower ROI and full-frame fallback passes.
-5. The frontend parses OCR lines and tries to extract:
+2. By default, each captured frame is uploaded to `POST /qr/decode`.
+3. The backend decodes Micro QR or regular QR with zxing-cpp, falling back to OpenCV for regular QR.
+4. The frontend displays the decoded seat and enables Male/Female audio buttons for that seat.
+5. The preserved OCR reader is available at `/ocr-reader` or `?reader=ocr`. In that mode, continuous scan uses `POST /ocr?mode=fast`, and manual `Read Again` uses `POST /ocr?mode=accurate`.
+6. The OCR reader parses OCR lines and tries to extract:
    - `holderName`
    - `seatNumber` matching `([0-9]{2}[A-Z]{2}[0-9]{2})`
-6. The frontend normalized-exact-matches OCR name candidates against `names.csv`; `/debug` autoplays the legacy `audio/<Seat No>.wav`, while the main operator screen enables manual Male/Female buttons after a match.
-7. The UI shows parsed fields, raw OCR lines, diagnostics, seat-audio status, and scan state.
+7. The OCR reader normalized-exact-matches OCR name candidates against `names.csv`; `/debug` autoplays the legacy `audio/<Seat No>.wav`, while the main operator screen enables manual Male/Female buttons after a match.
+8. The UI shows parsed fields, raw scan lines, diagnostics, seat-audio status, and scan state.
+
+## QR Code Generation
+
+Generate one Micro QR SVG:
+
+```bash
+python backend/qr_ticket.py generate --seat 10AC13 --output qr-codes/10AC13.svg
+```
+
+Generate a folder of Micro QR SVGs from `names.csv`:
+
+```bash
+python backend/qr_ticket.py batch --csv names.csv --output-dir qr-codes
+```
+
+The batch command only encodes `Seat No`; names in the CSV are ignored for QR payload size. Output filenames use the normalized seat number, for example `qr-codes/10AC13.svg`. Print the SVG at the same physical size you would have used for a normal QR code; Micro QR has fewer modules, so each module becomes larger and easier for the camera to identify. Use `--regular-qr` only if a downstream production tool cannot handle Micro QR.
+
+From the web UI, use the top-right **Convert** button to pick a CSV file. The local backend writes SVG files to `~/Downloads/qr-codes/`, creating the folder if needed.
 
 ## Runtime Endpoints
 
-- `POST /ocr`: OCR request endpoint; accepts `mode=fast` for continuous scan or `mode=accurate` for manual fallback-capable reads
+- `POST /qr/decode`: QR request endpoint used by the default operator screen
+- `POST /ocr`: preserved OCR request endpoint; accepts `mode=fast` for continuous scan or `mode=accurate` for manual fallback-capable reads
 - `GET /healthz`: lightweight process health endpoint
 - `GET /runtime/status`: OCR-model readiness, packaged-app runtime state, and seat-asset paths
 - `POST /shutdown`: localhost-only shutdown endpoint, enabled only in packaged mode
@@ -176,7 +197,7 @@ pip install -r packaging\windows\requirements-packaging.txt
 npm run build:windows
 ```
 
-`npm run build:windows` runs `backend\install_runtime.py --runtime auto` before PyInstaller. On Windows machines with an NVIDIA GPU, the script installs `paddlepaddle-gpu==3.2.2` from the Paddle CUDA 12.6 package index; otherwise it installs the CPU `paddlepaddle==3.2.2` wheel. To force a runtime, run `.\packaging\windows\build.ps1 -PaddleRuntime gpu` or `.\packaging\windows\build.ps1 -PaddleRuntime cpu`. Use `-SkipRuntimeInstall` only when the virtual environment already has the intended Paddle runtime.
+`npm run build:windows` runs `backend\install_runtime.py --runtime auto` before PyInstaller. On Windows machines with an NVIDIA GPU, the script installs `paddlepaddle-gpu==3.2.2` from the Paddle CUDA 12.6 package index; otherwise it installs the CPU `paddlepaddle==3.2.2` wheel. QR scanning uses OpenCV and can start before OCR models are ready. To force a runtime, run `.\packaging\windows\build.ps1 -PaddleRuntime gpu` or `.\packaging\windows\build.ps1 -PaddleRuntime cpu`. Use `-SkipRuntimeInstall` only when the virtual environment already has the intended Paddle runtime.
 
 Expected outputs:
 
@@ -192,9 +213,10 @@ Frontend env vars are defined in `src/config.ts`:
 - `VITE_SCAN_TIMEOUT_MS`
 - `VITE_RETRY_INTERVAL_MS`
 - `VITE_AUDIO_PLAYBACK_RATE`
+- `VITE_QR_BACKEND_URL`
 - `VITE_OCR_BACKEND_URL`
 
-Default backend URL is `/ocr`, which works in both dev mode and backend-hosted production mode.
+Default QR backend URL is `/qr/decode`; default OCR backend URL is `/ocr`. Both work in dev mode and backend-hosted production mode.
 
 Useful backend env vars:
 
@@ -249,7 +271,8 @@ OCR_DEVICE=gpu:0 python backend/main.py
 
 ## Seat Audio Assets
 
-- Keep `names.csv` at repo root with header `Seat No,Name`; legacy `Seat No,Chinese Name` files are still accepted.
+- QR scanning does not require `names.csv` at runtime because the QR payload includes the seat.
+- Keep `names.csv` at repo root with header `Seat No,Name` for QR batch generation and the preserved OCR reader; legacy `Seat No,Chinese Name` files are still accepted.
 - Put seat WAV files in repo-root `audio/`. Gendered files should be named like `audio/6E53_M.wav` and `audio/6E53_F.wav`; if either is missing, that button falls back to the legacy `audio/6E53.wav`.
 - In the packaged Windows app, editable runtime copies live under `%LOCALAPPDATA%\OCRTicketReader\assets`.
 - On first packaged launch, bundled starter assets are copied there only when the destination file is missing.
@@ -278,7 +301,7 @@ docker run --rm -p 8000:8000 -e PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True paddl
 
 - Camera capture is still intended for desktop Chrome.
 - The backend currently allows CORS from any origin.
-- OCR responses return `results`, `profiling`, `debug`, and `service_state`; `profiling.mode` reports `fast` or `accurate`, and `debug.label_detection.validation_attempts` lists the OCR candidates that were scored.
+- QR and OCR responses return `results`, `profiling`, `debug`, and `service_state`; `profiling.mode` reports `qr`, `fast`, or `accurate`. OCR debug data still includes `debug.label_detection.validation_attempts`.
 - First launch may take longer while OCR models are downloaded or loaded.
 - Write debug artifacts to `ocr_debug/` with `OCR_DEBUG_DIR=./ocr_debug OCR_DEBUG_SAVE_IMAGES=true python main.py`.
 - OS-specific setup details live in `SETUP.md`.

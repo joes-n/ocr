@@ -1,3 +1,24 @@
+# QR/OCR Ticket Reader 0.7.0
+
+Release date: 2026-06-29
+
+## Highlights
+
+- Added Micro QR and regular QR ticket scanning, with the QR reader as the default operator route.
+- Preserved the PaddleOCR reader at `/ocr-reader` and `?reader=ocr`.
+- Added CSV-to-QR SVG generation through the web UI and `backend/qr_ticket.py`.
+- Added `POST /qr/decode` and `POST /qr/convert` backend endpoints.
+- Added QR generation and decoding tests plus the required `segno` and `zxing-cpp` dependencies.
+- Bumped package and installer metadata to version `0.7.0`.
+
+## Windows Artifact
+
+- Installer: `qr-reader-setup.exe`
+- GitHub release: `https://github.com/joes-n/ocr/releases/tag/v0.7.0`
+- SHA256: `5b7298dd7d73ab7bf1d0b0e788d2ca2dd26bd3b1ee5de3568234057a6330b51d`
+
+---
+
 # OCR Ticket Reader 0.6.0
 
 Release date: 2026-05-29

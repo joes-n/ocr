@@ -67,8 +67,10 @@ for distribution_name in [
     "paddlepaddle",
     "paddlex",
     "python-multipart",
+    "segno",
     "starlette",
     "uvicorn",
+    "zxing-cpp",
 ]:
     add_distribution_metadata(distribution_name)
 
@@ -108,12 +110,14 @@ for package_name in [
     "pyclipper",
     "pypdfium2",
     "regex",
+    "segno",
     "scipy",
     "sentencepiece",
     "shapely",
     "sklearn",
     "tiktoken",
     "tokenizers",
+    "zxingcpp",
 ]:
     add_import_package(package_name)
 

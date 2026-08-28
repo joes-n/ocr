@@ -1,5 +1,5 @@
 #define AppName "OCR Ticket Reader"
-#define AppVersion "0.6.0"
+#define AppVersion "0.7.0"
 
 #ifndef SourceBundle
   #error SourceBundle must be provided via /DSourceBundle=...

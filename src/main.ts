@@ -20,7 +20,11 @@ if (!app) {
 const isChrome = /Chrome/.test(navigator.userAgent) && !/Edg|OPR/.test(navigator.userAgent);
 const hasCameraApi = Boolean(navigator.mediaDevices?.getUserMedia);
 const scanController = new ScanController("Ready");
-const isDebugRoute = window.location.pathname.replace(/\/$/, "") === "/debug";
+const normalizedPath = window.location.pathname.replace(/\/$/, "") || "/";
+const routeParams = new URLSearchParams(window.location.search);
+const isDebugRoute = normalizedPath === "/debug";
+const isOcrReaderRoute = normalizedPath === "/ocr-reader" || routeParams.get("reader") === "ocr";
+const isQrReaderMode = !isDebugRoute && !isOcrReaderRoute;
 const autoStartContinuousScan = !isDebugRoute;
 const debugCompareBackendUrl = "/debug/compare";
 
@@ -43,15 +47,23 @@ let debugContinuousLatencyTotalMs = 0;
 let debugContinuousLatencyCount = 0;
 let debugMatchedContinuousLatencyTotalMs = 0;
 let debugMatchedContinuousLatencyCount = 0;
+let isQRConvertInFlight = false;
 
 const CONTINUOUS_SCAN_INTERVAL_MS = 1000;
+const requiresNameSeatDirectory = (): boolean => !isQrReaderMode;
 
 const plannedAudioOutput: AudioResolution = {
   playbackRate: appConfig.audioPlaybackRate,
   segments: [],
 };
 
+const renderConvertControl = (): string => `
+  <button id="convert-qr-btn" class="convert-qr-button" type="button">Convert</button>
+  <input id="convert-qr-input" class="convert-qr-input" type="file" accept=".csv,text/csv" />
+`;
+
 const renderDebugApp = (): string => `
+  ${renderConvertControl()}
   <main class="shell">
     <header>
       <h1>OCR Ticket Reader</h1>
@@ -132,6 +144,7 @@ const renderDebugApp = (): string => `
 `;
 
 const renderOperatorApp = (): string => `
+  ${renderConvertControl()}
   <main class="operator-shell">
     <section class="operator-camera">
       <div class="operator-preview-frame preview-frame">
@@ -223,6 +236,8 @@ const quitAppButton = document.querySelector<HTMLButtonElement>("#quit-app-btn")
 const operatorNameElement = document.querySelector<HTMLParagraphElement>("#operator-name");
 const maleAudioButton = document.querySelector<HTMLButtonElement>("#male-audio-btn");
 const femaleAudioButton = document.querySelector<HTMLButtonElement>("#female-audio-btn");
+const convertQRButton = document.querySelector<HTMLButtonElement>("#convert-qr-btn");
+const convertQRInput = document.querySelector<HTMLInputElement>("#convert-qr-input");
 
 if (
   !appStateElement ||
@@ -244,6 +259,8 @@ if (
   !matchedAverageLatencyStatusElement ||
   !maleAudioButton ||
   !femaleAudioButton ||
+  !convertQRButton ||
+  !convertQRInput ||
   !ocrCountElement ||
   !ocrRawElement ||
   !backendPathElement ||
@@ -312,6 +329,13 @@ type DebugCompareResponse = {
   service_state?: RuntimeStatus;
 };
 
+type QRConvertResponse = {
+  error?: string;
+  output_dir?: string;
+  generated_count?: number;
+  files?: Array<{ seat?: string; filename?: string; path?: string }>;
+};
+
 const setAppState = (stateLabel: string): void => {
   appStateElement.innerHTML = `<strong>App state:</strong> ${stateLabel}`;
 };
@@ -322,7 +346,7 @@ function getVisibleSeatAssetWarningMessage(): string | null {
   }
 
   const messages: string[] = [];
-  if (!latestRuntimeStatus.names_csv_present) {
+  if (requiresNameSeatDirectory() && !latestRuntimeStatus.names_csv_present) {
     messages.push(`Add names.csv at ${latestRuntimeStatus.names_csv_path}.`);
   }
 
@@ -410,12 +434,16 @@ const getPackagedNamesCsvSetupMessage = (): string | null => {
     return null;
   }
 
+  if (!requiresNameSeatDirectory()) {
+    return `add seat WAV files under ${latestRuntimeStatus.audio_assets_dir}`;
+  }
+
   return `add names.csv at ${latestRuntimeStatus.names_csv_path} and seat WAV files under ${latestRuntimeStatus.audio_assets_dir}`;
 };
 
 const getSeatAssetSetupMessages = (status: RuntimeStatus): string[] => {
   const messages: string[] = [];
-  if (!status.names_csv_present) {
+  if (requiresNameSeatDirectory() && !status.names_csv_present) {
     messages.push(`Add names.csv at ${status.names_csv_path}.`);
   }
 
@@ -832,17 +860,23 @@ const setSwitchFacingLabel = (): void => {
 };
 
 const isRuntimeReady = (): boolean => Boolean(latestRuntimeStatus?.is_ready);
+const isScanRuntimeReady = (): boolean => (isQrReaderMode ? latestRuntimeStatus !== null : isRuntimeReady());
+
+const getScanRuntimeUnavailableMessage = (): string =>
+  isQrReaderMode
+    ? "QR scanner backend is not connected yet."
+    : latestRuntimeStatus?.message ?? "OCR runtime is not ready yet.";
 
 const updateActionAvailability = (): void => {
-  const canStartCamera = hasCameraApi && isChrome && isRuntimeReady() && !cameraStream;
+  const canStartCamera = hasCameraApi && isChrome && isScanRuntimeReady() && !cameraStream;
   const canPlayResolvedAudio = Boolean(latestConfirmedAudioResult?.sourceUrl);
   startCameraButton.disabled = !canStartCamera;
   captureOCRButton.disabled = isDebugRoute
     ? !cameraStream || isOCRInFlight || !isRuntimeReady() || continuousScanEnabled
-    : isOCRInFlight || !isRuntimeReady() || !hasCameraApi || !isChrome || continuousScanEnabled;
+    : isOCRInFlight || !isScanRuntimeReady() || !hasCameraApi || !isChrome || continuousScanEnabled;
   toggleContinuousScanButton.disabled = continuousScanEnabled
     ? !cameraStream
-    : !cameraStream || isOCRInFlight || !isRuntimeReady();
+    : !cameraStream || isOCRInFlight || !isScanRuntimeReady();
   stopCameraButton.disabled = !cameraStream;
   cameraSelectElement.disabled = !cameraStream;
   switchFacingButton.disabled = !cameraStream;
@@ -852,6 +886,8 @@ const updateActionAvailability = (): void => {
   if (femaleAudioButton) {
     femaleAudioButton.disabled = !canPlayResolvedAudio;
   }
+  convertQRButton.disabled = isQRConvertInFlight;
+  convertQRButton.textContent = isQRConvertInFlight ? "Converting..." : "Convert";
   quitAppButton.hidden = !(latestRuntimeStatus?.packaged ?? false);
   quitAppButton.disabled = !(latestRuntimeStatus?.packaged ?? false);
   setSwitchFacingLabel();
@@ -867,11 +903,17 @@ const updateRuntimeDisplay = (status: RuntimeStatus | null): void => {
     return;
   }
 
-  appModeElement.textContent = status.packaged ? "Packaged local app" : "Developer mode";
-  runtimeStateElement.textContent = `${status.state}${status.is_ready ? " (ready)" : ""}`;
+  appModeElement.textContent = `${status.packaged ? "Packaged local app" : "Developer mode"}${
+    isQrReaderMode ? " (QR reader)" : isOcrReaderRoute ? " (OCR reader)" : ""
+  }`;
+  runtimeStateElement.textContent = `${status.state}${status.is_ready ? " (ready)" : isQrReaderMode ? " (QR ready)" : ""}`;
 
   let runtimeMessage = status.message;
-  if (status.error) {
+  if (isQrReaderMode && status.error) {
+    runtimeMessage = `QR scanner is available. OCR runtime failed: ${status.error}. Log file: ${status.log_file}`;
+  } else if (isQrReaderMode && !status.is_ready) {
+    runtimeMessage = `QR scanner is available. OCR runtime is still starting in the background.`;
+  } else if (status.error) {
     runtimeMessage = `${status.message} Log file: ${status.log_file}`;
   } else if (!status.is_ready && status.cached_models_present) {
     runtimeMessage = `${status.message} Using cached models from ${status.model_cache_dir}.`;
@@ -897,10 +939,25 @@ const syncRuntimeStatus = (status: RuntimeStatus): void => {
     setCameraMessage(visibleSeatAssetWarning);
   }
 
-  if (status.is_ready) {
+  if (isScanRuntimeReady()) {
     if (!isDebugRoute && !operatorAutoStartAttempted && !cameraStream) {
       operatorAutoStartAttempted = true;
       void startPreview();
+    }
+  }
+
+  if (status.is_ready) {
+    if (!requiresNameSeatDirectory()) {
+      if (!status.audio_assets_present && !latestConfirmedAudioResult && !activeSeatAudio) {
+        updateSeatAudioDisplay({
+          lookupName: null,
+          resolvedSeat: null,
+          sourceUrl: null,
+          status: "error",
+          message: `warning (${getSeatAssetSetupMessage(status) ?? `put seat WAV files under ${status.audio_assets_dir}`})`,
+        });
+      }
+      return;
     }
 
     const seatAssetSetupMessage = getSeatAssetSetupMessage(status);
@@ -962,7 +1019,7 @@ const refreshRuntimeStatus = async (): Promise<void> => {
     runtimeMessageElement.textContent =
       error instanceof Error ? `Runtime status check failed: ${error.message}` : "Runtime status check failed.";
   } finally {
-    scheduleRuntimePoll(isRuntimeReady() ? 15000 : 1500);
+    scheduleRuntimePoll(isScanRuntimeReady() ? 15000 : 1500);
   }
 };
 
@@ -1166,6 +1223,8 @@ const buildOCRBackendUrl = (mode: OCRMode): string => {
   return url.toString();
 };
 
+const buildQRBackendUrl = (): string => new URL(appConfig.qrBackendUrl, window.location.origin).toString();
+
 const fetchOCRData = async (blob: Blob, mode: OCRMode): Promise<OCRResponse> => {
   const formData = new FormData();
   formData.append("file", blob, "frame.jpg");
@@ -1212,6 +1271,89 @@ const fetchOCRData = async (blob: Blob, mode: OCRMode): Promise<OCRResponse> => 
   } finally {
     window.clearTimeout(timeoutId);
   }
+};
+
+const fetchQRData = async (blob: Blob): Promise<OCRResponse> => {
+  const formData = new FormData();
+  formData.append("file", blob, "frame.jpg");
+
+  const timeoutMs = Math.max(500, appConfig.scanTimeoutMs);
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(buildQRBackendUrl(), {
+      method: "POST",
+      body: formData,
+      signal: controller.signal,
+    });
+
+    let data: OCRResponse | null = null;
+    try {
+      data = (await response.json()) as OCRResponse;
+    } catch {
+      data = null;
+    }
+
+    if (data?.service_state) {
+      syncRuntimeStatus(data.service_state);
+    }
+
+    if (!response.ok) {
+      const message =
+        typeof data?.error === "string" && data.error.trim().length > 0
+          ? data.error
+          : `QR backend returned ${response.status}`;
+      throw new Error(message);
+    }
+
+    if (data === null) {
+      throw new Error("QR backend returned an unreadable response.");
+    }
+
+    if (typeof data.error === "string" && data.error.trim().length > 0) {
+      throw new Error(`QR backend error: ${data.error}`);
+    }
+
+    return data;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+};
+
+const fetchQRConvertData = async (file: File): Promise<QRConvertResponse> => {
+  const formData = new FormData();
+  formData.append("file", file, file.name);
+
+  const response = await fetch("/qr/convert", {
+    method: "POST",
+    body: formData,
+  });
+
+  let data: QRConvertResponse | null = null;
+  try {
+    data = (await response.json()) as QRConvertResponse;
+  } catch {
+    data = null;
+  }
+
+  if (!response.ok) {
+    const message =
+      typeof data?.error === "string" && data.error.trim().length > 0
+        ? data.error
+        : `QR conversion returned ${response.status}`;
+    throw new Error(message);
+  }
+
+  if (data === null) {
+    throw new Error("QR conversion returned an unreadable response.");
+  }
+
+  if (typeof data.error === "string" && data.error.trim().length > 0) {
+    throw new Error(`QR conversion error: ${data.error}`);
+  }
+
+  return data;
 };
 
 const fetchDebugCompareData = async (blob: Blob): Promise<DebugCompareResponse> => {
@@ -1383,8 +1525,8 @@ const setContinuousScanEnabled = (enabled: boolean): void => {
     return;
   }
 
-  if (!cameraStream || !isRuntimeReady()) {
-    setCameraMessage("Continuous scan requires an active camera preview and ready OCR runtime.");
+  if (!cameraStream || !isScanRuntimeReady()) {
+    setCameraMessage("Continuous scan requires an active camera preview and ready scanner backend.");
     updateActionAvailability();
     return;
   }
@@ -1416,8 +1558,8 @@ const captureAndSendDebugCompare = async (
     return;
   }
 
-  if (!isRuntimeReady()) {
-    setCameraMessage(latestRuntimeStatus?.message ?? "OCR runtime is not ready yet.");
+  if (!isScanRuntimeReady()) {
+    setCameraMessage(getScanRuntimeUnavailableMessage());
     if (initiatedByContinuousScan && continuousScanEnabled) {
       scheduleContinuousScan();
     }
@@ -1516,11 +1658,128 @@ const captureAndSendDebugCompare = async (
   }
 };
 
+const captureAndSendQR = async (
+  options: { initiatedByContinuousScan?: boolean } = {}
+): Promise<void> => {
+  const initiatedByContinuousScan = options.initiatedByContinuousScan ?? false;
+  if (!cameraStream && !isOCRInFlight) {
+    await startPreview();
+  }
+
+  if (!cameraStream || isOCRInFlight) {
+    if (initiatedByContinuousScan && continuousScanEnabled) {
+      scheduleContinuousScan();
+    }
+    return;
+  }
+
+  if (!isScanRuntimeReady()) {
+    setCameraMessage(getScanRuntimeUnavailableMessage());
+    if (initiatedByContinuousScan && continuousScanEnabled) {
+      scheduleContinuousScan();
+    }
+    return;
+  }
+
+  const blob = await captureFrameBlob();
+  if (!blob) {
+    setCameraMessage("No video frame available yet. Wait for the preview to load and try again.");
+    if (initiatedByContinuousScan && continuousScanEnabled) {
+      scheduleContinuousScan();
+    }
+    return;
+  }
+
+  scanController.setState("Scanning");
+  isOCRInFlight = true;
+  updateActionAvailability();
+  setSampleStatus("sending QR frame");
+  if (!initiatedByContinuousScan) {
+    setConfirmedOperatorResult(null, null);
+    stopSeatAudioPlayback();
+  }
+
+  try {
+    const response = await fetchQRData(blob);
+    const items = Array.isArray(response.results) ? response.results : [];
+    const { result: parsed, debug: parserDebug } = parseResultFromOCRItems(items);
+    const qrName = response.qr?.name ?? parsed?.holderName ?? null;
+    const qrSeat = response.qr?.seat ?? parsed?.seatNumber ?? parserDebug.selectedSeat?.text ?? null;
+    const qrDisplayLabel = qrName ?? (qrSeat ? `Seat ${qrSeat}` : null);
+    const hasConfirmedQr = Boolean(qrSeat);
+    const seatAudioResult =
+      qrSeat
+        ? createReadySeatAudioResult(qrDisplayLabel ?? qrSeat, qrSeat)
+        : {
+            lookupName: null,
+            resolvedSeat: null,
+            sourceUrl: null,
+            status: "skipped" as const,
+            message: "skipped (no QR code found)",
+          };
+
+    if (hasConfirmedQr && qrDisplayLabel) {
+      setConfirmedOperatorResult(qrDisplayLabel, seatAudioResult);
+      if (initiatedByContinuousScan && qrSeat) {
+        lastContinuousAudioSeat = qrSeat;
+      } else if (!initiatedByContinuousScan) {
+        lastContinuousAudioSeat = null;
+      }
+    } else if (!initiatedByContinuousScan) {
+      setConfirmedOperatorResult(null, null);
+      lastContinuousAudioSeat = null;
+    }
+
+    scanController.setState(hasConfirmedQr ? "Recognized" : "RetryNeeded");
+    updateOCRDisplay(items, parsed, parserDebug);
+    if (hasConfirmedQr && qrSeat) {
+      ocrSummaryElement.innerHTML = `<strong>Latest OCR result:</strong> QR ${response.qr?.format ?? "code"}`;
+      resultNameElement.innerHTML = `<strong>Name:</strong> ${qrName ?? "-"}`;
+      resultSeatElement.innerHTML = `<strong>Seat:</strong> ${qrSeat}`;
+      resultConfidenceElement.innerHTML = "<strong>Confidence:</strong> QR verified";
+    }
+    if (hasConfirmedQr || !initiatedByContinuousScan) {
+      updateSeatAudioDisplay(seatAudioResult);
+    }
+    updateDiagnosticsDisplay(response, parserDebug);
+    updateLatencyDisplay(response.profiling?.total_ms, null, null);
+    setSampleStatus(hasConfirmedQr ? "completed QR read" : "completed (no QR)");
+    setCameraMessage(hasConfirmedQr ? "QR read successful." : "No QR code found.");
+  } catch (error) {
+    scanController.setState("RetryNeeded");
+    updateDiagnosticsDisplay(null, null);
+    updateSeatAudioDisplay({
+      lookupName: null,
+      resolvedSeat: null,
+      sourceUrl: null,
+      status: "error",
+      message: "error (QR request failed before audio lookup)",
+    });
+    if (error instanceof DOMException && error.name === "AbortError") {
+      setCameraMessage(`QR request timed out after ${Math.max(500, appConfig.scanTimeoutMs)}ms.`);
+    } else {
+      setCameraMessage(error instanceof Error ? `QR request failed: ${error.message}` : "QR request failed.");
+    }
+    setSampleStatus("failed");
+  } finally {
+    isOCRInFlight = false;
+    updateActionAvailability();
+    if (initiatedByContinuousScan && continuousScanEnabled && cameraStream) {
+      scheduleContinuousScan();
+    }
+  }
+};
+
 const captureAndSendOCR = async (
   options: { initiatedByContinuousScan?: boolean } = {}
 ): Promise<void> => {
   if (isDebugRoute) {
     await captureAndSendDebugCompare(options);
+    return;
+  }
+
+  if (isQrReaderMode) {
+    await captureAndSendQR(options);
     return;
   }
 
@@ -1536,8 +1795,8 @@ const captureAndSendOCR = async (
     return;
   }
 
-  if (!isRuntimeReady()) {
-    setCameraMessage(latestRuntimeStatus?.message ?? "OCR runtime is not ready yet.");
+  if (!isScanRuntimeReady()) {
+    setCameraMessage(getScanRuntimeUnavailableMessage());
     if (initiatedByContinuousScan && continuousScanEnabled) {
       scheduleContinuousScan();
     }
@@ -1622,6 +1881,29 @@ const captureAndSendOCR = async (
   }
 };
 
+const convertSelectedCSVToQRCodes = async (file: File): Promise<void> => {
+  isQRConvertInFlight = true;
+  updateActionAvailability();
+  setCameraMessage(`Converting ${file.name} to QR SVG files...`);
+
+  try {
+    const response = await fetchQRConvertData(file);
+    const count = response.generated_count ?? response.files?.length ?? 0;
+    const outputDir = response.output_dir ?? "~/Downloads/qr-codes";
+    const message = `Converted ${count} QR SVG file(s) to ${outputDir}.`;
+    setCameraMessage(message);
+    window.alert(message);
+  } catch (error) {
+    const message = error instanceof Error ? `QR conversion failed: ${error.message}` : "QR conversion failed.";
+    setCameraMessage(message);
+    window.alert(message);
+  } finally {
+    isQRConvertInFlight = false;
+    convertQRInput.value = "";
+    updateActionAvailability();
+  }
+};
+
 const stopPreview = (): void => {
   isOCRInFlight = false;
   disableContinuousScan();
@@ -1662,9 +1944,9 @@ const startPreview = async (): Promise<void> => {
     return;
   }
 
-  if (!isRuntimeReady()) {
+  if (!isScanRuntimeReady()) {
     scanController.setState("RetryNeeded");
-    setCameraMessage(latestRuntimeStatus?.message ?? "OCR runtime is still starting.");
+    setCameraMessage(getScanRuntimeUnavailableMessage());
     return;
   }
 
@@ -1754,6 +2036,22 @@ startCameraButton.addEventListener("click", () => {
 
 captureOCRButton.addEventListener("click", () => {
   void captureAndSendOCR();
+});
+
+convertQRButton.addEventListener("click", () => {
+  if (!isQRConvertInFlight) {
+    setCameraMessage("Choose a CSV file with a Seat No column.");
+    convertQRInput.click();
+  }
+});
+
+convertQRInput.addEventListener("change", () => {
+  const selectedFile = convertQRInput.files?.[0];
+  if (selectedFile) {
+    void convertSelectedCSVToQRCodes(selectedFile);
+  } else {
+    setCameraMessage("QR conversion cancelled. No file selected.");
+  }
 });
 
 maleAudioButton?.addEventListener("click", () => {

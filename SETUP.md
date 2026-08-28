@@ -22,7 +22,7 @@ Important:
 
 - This repo does not include a sample ticket image anymore.
 - For backend verification, replace the example image path below with a real local image on your machine.
-- On first backend startup, OCR model initialization may take a while.
+- QR scanning can run once the backend is reachable. On first backend startup, OCR model initialization may continue in the background for the preserved OCR reader.
 
 ## Linux Or macOS Developer Mode
 
@@ -49,7 +49,7 @@ Backend should be available at `http://127.0.0.1:8000`.
 
 ### 3) Verify backend readiness
 
-The process can be up before OCR is fully ready. Check:
+The process can be up before OCR is fully ready. QR scanning only needs the backend process to respond; OCR tests should still wait for `"state": "ready"`.
 
 ```bash
 curl http://127.0.0.1:8000/runtime/status
@@ -57,7 +57,16 @@ curl http://127.0.0.1:8000/runtime/status
 
 Wait until `"state": "ready"` before testing OCR.
 
-### 4) Verify OCR manually
+### 4) Generate QR codes
+
+```bash
+python backend/qr_ticket.py generate --seat 10AC13 --output qr-codes/10AC13.svg
+python backend/qr_ticket.py batch --csv names.csv --output-dir qr-codes
+```
+
+The web UI also has a top-right Convert button. Pick a CSV file there to write SVGs to `~/Downloads/qr-codes/`.
+
+### 5) Verify OCR manually
 
 ```bash
 curl -X POST http://127.0.0.1:8000/ocr \
@@ -72,7 +81,7 @@ source .venv/bin/activate
 python test_script.py /absolute/path/to/your-image.jpg
 ```
 
-### 5) Start the frontend in dev mode
+### 6) Start the frontend in dev mode
 
 ```bash
 cd /home/raner/proj_ocr
@@ -81,6 +90,8 @@ npm run dev
 ```
 
 Open the Vite URL shown in terminal, typically `http://127.0.0.1:5173`, in desktop Chrome.
+
+The default route is the QR reader. Open `/ocr-reader` or add `?reader=ocr` to use the preserved OCR reader.
 
 ## Windows Developer Mode (PowerShell)
 
@@ -111,15 +122,24 @@ Backend should be available at `http://127.0.0.1:8000`.
 curl.exe http://127.0.0.1:8000/runtime/status
 ```
 
-Wait until `"state": "ready"` before testing OCR.
+QR scanning only needs the backend process to respond. Wait until `"state": "ready"` before testing OCR.
 
-### 4) Verify OCR manually
+### 4) Generate QR codes
+
+```powershell
+python backend\qr_ticket.py generate --seat 10AC13 --output qr-codes\10AC13.svg
+python backend\qr_ticket.py batch --csv names.csv --output-dir qr-codes
+```
+
+The web UI also has a top-right Convert button. Pick a CSV file there to write SVGs to `C:\Users\<you>\Downloads\qr-codes`.
+
+### 5) Verify OCR manually
 
 ```powershell
 curl.exe -X POST http://127.0.0.1:8000/ocr -F "file=@C:\path\to\your-image.jpg"
 ```
 
-### 5) Start the frontend in dev mode
+### 6) Start the frontend in dev mode
 
 ```powershell
 cd C:\path\to\proj_ocr
@@ -128,6 +148,8 @@ npm run dev
 ```
 
 Open the Vite URL shown in terminal, typically `http://127.0.0.1:5173`, in desktop Chrome.
+
+The default route is the QR reader. Open `/ocr-reader` or add `?reader=ocr` to use the preserved OCR reader.
 
 ## Production-Style Local Mode
 
@@ -198,9 +220,9 @@ The PowerShell build script:
 ### 4) Packaged app behavior
 
 - The launcher starts the backend on `127.0.0.1:38451`
-- The backend serves the built frontend and OCR APIs from the same origin
+- The backend serves the built frontend plus QR/OCR APIs from the same origin
 - The browser opens automatically once `GET /healthz` responds
-- The UI polls `GET /runtime/status` until OCR reaches `ready`
+- The UI can start QR scanning when the backend responds; the OCR reader still waits until OCR reaches `ready`
 - Packaged app data defaults to `%LOCALAPPDATA%\OCRTicketReader`
 - Editable seat assets live under `%LOCALAPPDATA%\OCRTicketReader\assets`
 - On first launch, packaged starter `names.csv` and `audio\` files are copied there only if they were bundled and the destination file is missing
@@ -228,7 +250,7 @@ docker run --rm -p 8000:8000 -e PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True paddl
 
 ## Troubleshooting
 
-- If the browser UI says the runtime is still starting, check `GET /runtime/status` and wait for `"state": "ready"`.
+- If the OCR reader says the runtime is still starting, check `GET /runtime/status` and wait for `"state": "ready"`.
 - If frontend requests fail in dev mode, confirm the backend is running on port `8000`.
 - If production-style local mode serves a 404 at `/`, run `npm run build` first so `dist/` exists.
 - If camera preview fails, use desktop Chrome and allow camera access.

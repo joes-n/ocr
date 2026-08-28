@@ -13,9 +13,10 @@ export type OCRResult = {
 };
 
 export type OCRProfiling = {
-  mode?: "fast" | "accurate";
+  mode?: "fast" | "accurate" | "qr";
   path?: string;
   decode_ms?: number;
+  qr_decode_ms?: number;
   label_detect_ms?: number;
   crop_ms?: number;
   seg_ms?: number;
@@ -51,6 +52,13 @@ export type OCRDebug = {
 export type OCRResponse = {
   error?: string;
   results?: OCRItem[];
+  qr?: {
+    name?: string;
+    seat?: string;
+    raw?: string;
+    format?: string;
+    decoded_count?: number;
+  };
   profiling?: OCRProfiling;
   debug?: OCRDebug;
   service_state?: RuntimeStatus;

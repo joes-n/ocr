@@ -55,6 +55,7 @@ STATIC_EXCLUDE_PREFIXES = {
     "healthz",
     "ocr",
     "openapi.json",
+    "qr",
     "redoc",
     "runtime",
     "shutdown",
@@ -105,10 +106,12 @@ try:
     from .hardware_detection import detect_nvidia_gpu
     from .ocr_device import OCRDeviceResolution, detect_paddle_cuda_status, resolve_ocr_device
     from .ocr_scoring import score_ocr_items
+    from .qr_ticket import QRTicketError, convert_csv_text_to_qr_svgs, decode_qr_payloads, sanitize_seat_text
 except ImportError:
     from hardware_detection import detect_nvidia_gpu
     from ocr_device import OCRDeviceResolution, detect_paddle_cuda_status, resolve_ocr_device
     from ocr_scoring import score_ocr_items
+    from qr_ticket import QRTicketError, convert_csv_text_to_qr_svgs, decode_qr_payloads, sanitize_seat_text
 
 
 @asynccontextmanager
@@ -447,6 +450,31 @@ def _missing_audio_message(relative_path: str) -> str:
     if PACKAGED_MODE:
         return f"Audio file not found. Add {relative_path} under {asset_root}"
     return f"Audio file not found at {asset_root / relative_path}"
+
+
+def _seat_name_lookup_from_csv() -> dict[str, str]:
+    path = _names_csv_path()
+    if not path.is_file():
+        return {}
+
+    try:
+        import csv
+
+        with path.open("r", encoding="utf-8-sig", newline="") as file_handle:
+            reader = csv.DictReader(file_handle)
+            if "Seat No" not in (reader.fieldnames or []):
+                return {}
+
+            lookup = {}
+            for row in reader:
+                seat = sanitize_seat_text(str(row.get("Seat No", "")))
+                name = str(row.get("Name") or row.get("Chinese Name") or "").strip()
+                if seat and name:
+                    lookup[seat] = name
+            return lookup
+    except Exception as exc:
+        logger.warning("Unable to load seat-name lookup from %s: %s", path, exc)
+        return {}
 
 
 def _rounded(value: float, digits: int = 4) -> float:
@@ -1040,6 +1068,160 @@ async def audio_asset(asset_path: str):
         return PlainTextResponse(_missing_audio_message(asset_path), status_code=404)
 
     return FileResponse(audio_file)
+
+
+@app.post("/qr/convert")
+async def convert_qr_csv(file: UploadFile = File(...)):
+    logger.info("Received request /qr/convert filename=%s", file.filename)
+    try:
+        contents = await file.read()
+        try:
+            csv_text = contents.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise QRTicketError("CSV must be UTF-8 encoded.") from exc
+
+        output_dir = Path.home() / "Downloads" / "qr-codes"
+        files = convert_csv_text_to_qr_svgs(csv_text, output_dir)
+        names_csv_file = _names_csv_path()
+        names_csv_file.parent.mkdir(parents=True, exist_ok=True)
+        names_csv_file.write_text(csv_text, encoding="utf-8")
+        logger.info("Converted %s QR SVG file(s) to %s", len(files), output_dir)
+        return {
+            "output_dir": str(output_dir),
+            "generated_count": len(files),
+            "files": files,
+            "names_csv_path": str(names_csv_file),
+        }
+    except QRTicketError as exc:
+        return JSONResponse(status_code=422, content={"error": str(exc)})
+    except Exception as exc:
+        logger.error("error converting QR CSV: %s", exc)
+        logger.error(traceback.format_exc())
+        return JSONResponse(status_code=500, content={"error": str(exc)})
+
+
+@app.post("/qr/decode")
+async def decode_qr_image(file: UploadFile = File(...)):
+    logger.info("Received request /qr/decode")
+    total_start = time.perf_counter()
+    request_id = uuid.uuid4().hex[:8]
+
+    try:
+        contents = await file.read()
+
+        decode_start = time.perf_counter()
+        nparr = np.frombuffer(contents, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        decode_ms = (time.perf_counter() - decode_start) * 1000.0
+
+        if img is None:
+            raise ValueError("Unable to decode image from upload")
+
+        qr_start = time.perf_counter()
+        decoded_payloads = decode_qr_payloads(img)
+        qr_decode_ms = (time.perf_counter() - qr_start) * 1000.0
+        total_ms = (time.perf_counter() - total_start) * 1000.0
+
+        profiling = {
+            "mode": "qr",
+            "path": "qr_decode",
+            "decode_ms": round(decode_ms, 2),
+            "qr_decode_ms": round(qr_decode_ms, 2),
+            "total_ms": round(total_ms, 2),
+        }
+
+        if not decoded_payloads:
+            return {
+                "results": [],
+                "profiling": profiling,
+                "debug": {
+                    "request_id": request_id,
+                    "attempt_number": None,
+                    "attempt_dir": None,
+                    "artifacts_dir": None,
+                    "image_shape": {"width": int(img.shape[1]), "height": int(img.shape[0])},
+                    "qr": {"decoded_count": 0},
+                },
+                "service_state": runtime_manager.status(),
+            }
+
+        decoded = decoded_payloads[0]
+        payload = decoded["payload"]
+        lookup_name = payload.name or _seat_name_lookup_from_csv().get(payload.seat)
+        box = decoded.get("points") or []
+        results = [{"box": box, "text": payload.seat, "confidence": 1.0}]
+        if lookup_name:
+            results.insert(0, {"box": box, "text": lookup_name, "confidence": 1.0})
+
+        logger.info(
+            "request_id=%s qr decoded name=%s seat=%s format=%s profiling=%s",
+            request_id,
+            lookup_name,
+            payload.seat,
+            decoded.get("format"),
+            profiling,
+        )
+        return {
+            "results": results,
+            "qr": {
+                "name": lookup_name,
+                "seat": payload.seat,
+                "raw": decoded.get("raw"),
+                "decoded_count": len(decoded_payloads),
+                "format": decoded.get("format"),
+            },
+            "profiling": profiling,
+            "debug": {
+                "request_id": request_id,
+                "attempt_number": None,
+                "attempt_dir": None,
+                "artifacts_dir": None,
+                "image_shape": {"width": int(img.shape[1]), "height": int(img.shape[0])},
+                "qr": {
+                    "decoded_count": len(decoded_payloads),
+                    "selected_index": 0,
+                    "points": box,
+                    "format": decoded.get("format"),
+                },
+            },
+            "service_state": runtime_manager.status(),
+        }
+    except QRTicketError as exc:
+        total_ms = (time.perf_counter() - total_start) * 1000.0
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": str(exc),
+                "results": [],
+                "profiling": {"mode": "qr", "path": "qr_decode", "total_ms": round(total_ms, 2)},
+                "debug": {
+                    "request_id": request_id,
+                    "attempt_number": None,
+                    "attempt_dir": None,
+                    "artifacts_dir": None,
+                },
+                "service_state": runtime_manager.status(),
+            },
+        )
+    except Exception as exc:
+        logger.error("request_id=%s error processing QR image: %s", request_id, exc)
+        logger.error(traceback.format_exc())
+        total_ms = (time.perf_counter() - total_start) * 1000.0
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": str(exc),
+                "results": [],
+                "profiling": {"mode": "qr", "path": "qr_decode", "total_ms": round(total_ms, 2)},
+                "debug": {
+                    "request_id": request_id,
+                    "attempt_number": None,
+                    "attempt_dir": None,
+                    "artifacts_dir": None,
+                },
+                "service_state": runtime_manager.status(),
+            },
+        )
 
 
 @app.post("/ocr")
